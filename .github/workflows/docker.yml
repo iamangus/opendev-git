@@ -1,0 +1,32 @@
+name: Docker Image CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to GitHub Container Registry
+        run: docker login docker.pkg.github.com -u iamangus -p ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set timestamp tag
+        id: vars
+        run: echo "tag=$(date +%s)" >> $GITHUB_OUTPUT
+
+      - name: Build the Docker image
+        run: docker build . --file Dockerfile --tag docker.pkg.github.com/iamangus/opendev-git/opendev-git:latest
+
+      - name: Push the latest Docker image
+        run: docker push docker.pkg.github.com/iamangus/opendev-git/opendev-git:latest
+
+      - name: Retag with timestamp
+        run: docker tag docker.pkg.github.com/iamangus/opendev-git/opendev-git:latest docker.pkg.github.com/iamangus/opendev-git/opendev-git:${{ steps.vars.outputs.tag }}
+
+      - name: Push the timestamped Docker image
+        run: docker push docker.pkg.github.com/iamangus/opendev-git/opendev-git:${{ steps.vars.outputs.tag }}

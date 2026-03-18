@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/iamangus/opendev-git/internal/agent"
+	"github.com/iamangus/opendev-git/internal/agentapi"
 	"github.com/iamangus/opendev-git/internal/config"
 	"github.com/iamangus/opendev-git/internal/orchestrator"
 	"github.com/iamangus/opendev-git/internal/tools"
@@ -29,6 +30,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.Handle("/webhook", webhookHandler)
+	mux.Handle("POST /api/v1/agents/{name}/run", agentapi.NewHandler(agentClient))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})

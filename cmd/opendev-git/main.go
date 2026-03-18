@@ -1,0 +1,41 @@
+package main
+
+import (
+	"fmt"
+	"log"
+	"net/http"
+
+	"github.com/iamangus/opendev-git/internal/agent"
+	"github.com/iamangus/opendev-git/internal/config"
+	"github.com/iamangus/opendev-git/internal/orchestrator"
+	"github.com/iamangus/opendev-git/internal/tools"
+	"github.com/iamangus/opendev-git/internal/webhook"
+)
+
+func main() {
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("load config: %v", err)
+	}
+
+	t := tools.New(cfg.WorkspaceDir)
+	agentClient := agent.NewClient(cfg.AgentServiceURL)
+
+	// The orchestrator is initialized without a GitHub client; per-event goroutines
+	// create a client with the correct installation ID and call WithGitHubClient.
+	orch := orchestrator.New(cfg, nil, t, agentClient)
+
+	webhookHandler := webhook.NewHandler(cfg, orch)
+
+	mux := http.NewServeMux()
+	mux.Handle("/webhook", webhookHandler)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "ok")
+	})
+
+	addr := ":" + cfg.Port
+	log.Printf("opendev-git listening on %s", addr)
+	if err := http.ListenAndServe(addr, mux); err != nil {
+		log.Fatalf("server: %v", err)
+	}
+}

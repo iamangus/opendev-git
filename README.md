@@ -74,6 +74,37 @@ All configuration is via environment variables:
 
 ## Running
 
+### Container (recommended)
+
+A Docker image is built and published automatically on every push to `main` via the CI workflow.
+
+Pull and run the latest image:
+
+```bash
+docker pull docker.pkg.github.com/iamangus/opendev-git/opendev-git:latest
+
+docker run -d \
+  -p 8080:8080 \
+  -e GITHUB_APP_ID="123456" \
+  -e GITHUB_PRIVATE_KEY="$(cat /path/to/private-key.pem)" \
+  -e GITHUB_WEBHOOK_SECRET="your-webhook-secret" \
+  -e AGENT_SERVICE_URL="http://your-agent-service:9090" \
+  -e CODE_MCP_URL="http://your-code-mcp:8081" \
+  -e DESIGNATED_LABEL="opendev-git" \
+  -e TOOL_BUDGET="20" \
+  docker.pkg.github.com/iamangus/opendev-git/opendev-git:latest
+```
+
+Each image is also tagged with a Unix timestamp (e.g. `opendev-git:1742300000`) for pinning to a specific build.
+
+To build the image locally:
+
+```bash
+docker build -t opendev-git .
+```
+
+### From source
+
 Copy `start.sh` and fill in your values:
 
 ```bash

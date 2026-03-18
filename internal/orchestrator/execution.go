@@ -17,17 +17,16 @@ const maxRetries = 3
 // test execution via code-mcp, and PR creation.
 //
 // Steps:
-//  1. Get installation token for code-mcp repo cloning
-//  2. Ensure repo is present in code-mcp
-//  3. Create branch via GitHub API
-//  4. Create branch worktree in code-mcp
-//  5. Set status:in-progress
-//  6. Parse tasks from investigation comment
-//  7. For each task: agent writes code via write MCP → run tests → retry on failure
-//  8. Push branch to origin via code-mcp
-//  9. Open PR
+//  1. Ensure repo is present and up to date in code-mcp
+//  2. Create branch via GitHub API
+//  3. Create branch worktree in code-mcp
+//  4. Set status:in-progress
+//  5. Parse tasks from investigation comment
+//  6. For each task: agent writes code via write MCP → run tests → retry on failure
+//  7. Push branch to origin via code-mcp
+//  8. Open PR
 //
-// 10. Async cleanup of worktree
+// 9. Async cleanup of worktree
 func (o *Orchestrator) runExecution(ctx context.Context, owner, repo string, issue *github.Issue, investigationComment, defaultBranch string) error {
 	number := issue.GetNumber()
 
@@ -36,15 +35,9 @@ func (o *Orchestrator) runExecution(ctx context.Context, owner, repo string, iss
 		return fmt.Errorf("get default branch: %w", err)
 	}
 
-	// Get an installation token so code-mcp can clone/authenticate.
-	token, err := o.github.GetInstallationToken(ctx)
-	if err != nil {
-		return fmt.Errorf("get installation token: %w", err)
-	}
-
-	// Ensure the repo is present in code-mcp (idempotent).
+	// Ensure the repo is present and up to date in code-mcp (idempotent).
 	cloneURL := "https://github.com/" + owner + "/" + repo
-	if err := o.codemcp.EnsureRepo(ctx, repo, cloneURL, token); err != nil {
+	if err := o.codemcp.EnsureRepo(ctx, repo, cloneURL); err != nil {
 		return fmt.Errorf("ensure repo in code-mcp: %w", err)
 	}
 

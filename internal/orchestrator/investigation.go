@@ -34,13 +34,9 @@ func (o *Orchestrator) runInvestigation(ctx context.Context, owner, repo string,
 		return fmt.Errorf("get default branch: %w", err)
 	}
 
-	// Ensure code-mcp has the repo cloned and a worktree for the default branch.
-	token, err := o.github.GetInstallationToken(ctx)
-	if err != nil {
-		return fmt.Errorf("get installation token: %w", err)
-	}
+	// Ensure code-mcp has the repo cloned/synced and a worktree for the default branch.
 	cloneURL := "https://github.com/" + owner + "/" + repo
-	if err := o.codemcp.EnsureRepo(ctx, repo, cloneURL, token); err != nil {
+	if err := o.codemcp.EnsureRepo(ctx, repo, cloneURL); err != nil {
 		return fmt.Errorf("ensure repo in code-mcp: %w", err)
 	}
 	if err := o.codemcp.EnsureBranch(ctx, repo, defaultBranch, defaultBranch); err != nil {

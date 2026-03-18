@@ -25,15 +25,13 @@ func NewClient(baseURL string) *Client {
 	}
 }
 
-// EnsureRepo clones a repository into code-mcp if it is not already present.
-// A 409 Conflict response is treated as success (repo already exists).
-func (c *Client) EnsureRepo(ctx context.Context, name, cloneURL, token string) error {
+// EnsureRepo ensures code-mcp has the repository cloned and up to date.
+// If the repo is not yet cloned it will be cloned from cloneURL; if it is
+// already present a fetch will be run instead. This is idempotent.
+func (c *Client) EnsureRepo(ctx context.Context, name, cloneURL string) error {
 	body := map[string]string{
 		"url":  cloneURL,
 		"name": name,
-	}
-	if token != "" {
-		body["token"] = token
 	}
 
 	data, err := json.Marshal(body)
@@ -47,10 +45,6 @@ func (c *Client) EnsureRepo(ctx context.Context, name, cloneURL, token string) e
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusConflict {
-		// Already exists — that's fine.
-		return nil
-	}
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("EnsureRepo %q: unexpected status %d: %s", name, resp.StatusCode, string(b))
@@ -58,12 +52,13 @@ func (c *Client) EnsureRepo(ctx context.Context, name, cloneURL, token string) e
 	return nil
 }
 
-// EnsureBranch creates a worktree for the given branch in an already-cloned repo.
-// baseBranch is the branch to base the new branch off of.
+// EnsureBranch creates a worktree for the given branch in an already-synced repo.
+// baseBranch is the branch to base the new branch off of. If the worktree
+// already exists this is a no-op.
 func (c *Client) EnsureBranch(ctx context.Context, repo, branch, baseBranch string) error {
 	body := map[string]string{
-		"branch":     branch,
-		"baseBranch": baseBranch,
+		"branch": branch,
+		"base":   baseBranch,
 	}
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -76,10 +71,6 @@ func (c *Client) EnsureBranch(ctx context.Context, repo, branch, baseBranch stri
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusConflict {
-		// Already exists — that's fine.
-		return nil
-	}
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("EnsureBranch %q/%q: unexpected status %d: %s", repo, branch, resp.StatusCode, string(b))

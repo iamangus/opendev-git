@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/iamangus/opendev-git/internal/mcpclient"
 )
 
 // ToolCall represents a tool the agent wants to invoke.
@@ -18,8 +20,9 @@ type ToolCall struct {
 
 // Request is the payload sent to the agent service.
 type Request struct {
-	Phase   string `json:"phase"`
-	Context string `json:"context"`
+	Phase      string                   `json:"phase"`
+	Context    string                   `json:"context"`
+	MCPServers []mcpclient.ServerConfig `json:"mcp_servers,omitempty"`
 }
 
 // Response is the payload returned by the agent service.

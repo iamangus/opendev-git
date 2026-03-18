@@ -32,6 +32,18 @@ type Response struct {
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
+// wireRequest is the JSON body sent to POST /api/v1/agents/{name}/run.
+type wireRequest struct {
+	Message    string                   `json:"message"`
+	MCPServers []mcpclient.ServerConfig `json:"mcp_servers,omitempty"`
+}
+
+// wireResponse is the JSON body returned by POST /api/v1/agents/{name}/run.
+type wireResponse struct {
+	Agent    string `json:"agent"`
+	Response string `json:"response"`
+}
+
 // Client is an HTTP client for the agent service.
 type Client struct {
 	baseURL    string
@@ -50,12 +62,13 @@ func NewClient(baseURL string) *Client {
 
 // Send sends a request to the agent service and returns its response.
 func (c *Client) Send(ctx context.Context, req Request) (*Response, error) {
-	body, err := json.Marshal(req)
+	body, err := json.Marshal(wireRequest{Message: req.Context, MCPServers: req.MCPServers})
 	if err != nil {
 		return nil, fmt.Errorf("marshal agent request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/agent", bytes.NewReader(body))
+	url := c.baseURL + "/api/v1/agents/" + req.Phase + "/run"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build agent HTTP request: %w", err)
 	}
@@ -76,9 +89,9 @@ func (c *Client) Send(ctx context.Context, req Request) (*Response, error) {
 		return nil, fmt.Errorf("agent service returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	var agentResp Response
-	if err := json.Unmarshal(respBody, &agentResp); err != nil {
+	var wire wireResponse
+	if err := json.Unmarshal(respBody, &wire); err != nil {
 		return nil, fmt.Errorf("unmarshal agent response: %w", err)
 	}
-	return &agentResp, nil
+	return &Response{Text: wire.Response, Done: true}, nil
 }

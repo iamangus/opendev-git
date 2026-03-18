@@ -8,30 +8,39 @@ import (
 
 	"github.com/google/go-github/v84/github"
 	"github.com/iamangus/opendev-git/internal/agent"
+	"github.com/iamangus/opendev-git/internal/mcpclient"
 )
 
 // runPlanning evaluates the investigation results and decides whether to proceed.
 //
 // Steps:
-//  1. Agent evaluates confidence in the proposed task list
+//  1. Agent evaluates confidence in the proposed task list (with read MCP access)
 //  2. If confident → set status:approved, proceed to execution
 //  3. If not confident → post questions, set status:blocked
-func (o *Orchestrator) runPlanning(ctx context.Context, owner, repo string, issue *github.Issue, investigationComment string) error {
+func (o *Orchestrator) runPlanning(ctx context.Context, owner, repo string, issue *github.Issue, investigationComment, defaultBranch string) error {
 	number := issue.GetNumber()
 
 	planCtx := fmt.Sprintf(
 		"You are reviewing an investigation report for a GitHub issue and deciding whether the plan is clear enough to implement.\n\n"+
 			"## Original Issue\n%s\n\n"+
 			"## Investigation Report\n%s\n\n"+
+			"Use the available MCP tools to explore the codebase if you need more context. "+
 			"If the plan is clear and complete, respond with done:true. "+
 			"If you need clarification, ask a question (do not set done:true).",
 		buildIssueContext(issue),
 		investigationComment,
 	)
 
+	readMCP := []mcpclient.ServerConfig{{
+		Name:      "code",
+		URL:       o.codemcp.MCPReadURL(repo, defaultBranch),
+		Transport: "streamable-http",
+	}}
+
 	resp, err := o.agent.Send(ctx, agent.Request{
-		Phase:   "planning",
-		Context: planCtx,
+		Phase:      "planning",
+		Context:    planCtx,
+		MCPServers: readMCP,
 	})
 	if err != nil {
 		return fmt.Errorf("planning agent send: %w", err)
@@ -43,7 +52,7 @@ func (o *Orchestrator) runPlanning(ctx context.Context, owner, repo string, issu
 		if err := o.transitionStatus(ctx, owner, repo, number, "", "status:approved"); err != nil {
 			return fmt.Errorf("set approved status: %w", err)
 		}
-		return o.runExecution(ctx, owner, repo, issue, investigationComment)
+		return o.runExecution(ctx, owner, repo, issue, investigationComment, defaultBranch)
 	}
 
 	// Agent has questions.

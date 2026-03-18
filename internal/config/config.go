@@ -13,6 +13,7 @@ type Config struct {
 	GitHubPrivateKey    string // PEM content
 	GitHubWebhookSecret string
 	AgentServiceURL     string
+	CodeMCPURL          string // base URL of the code-mcp service
 	DesignatedLabel     string // label that triggers investigation (default: "opendev-git")
 	RepoOwner           string
 	RepoName            string
@@ -51,6 +52,11 @@ func Load() (*Config, error) {
 	cfg.AgentServiceURL = os.Getenv("AGENT_SERVICE_URL")
 	if cfg.AgentServiceURL == "" {
 		return nil, errors.New("AGENT_SERVICE_URL is required")
+	}
+
+	cfg.CodeMCPURL = os.Getenv("CODE_MCP_URL")
+	if cfg.CodeMCPURL == "" {
+		return nil, errors.New("CODE_MCP_URL is required")
 	}
 
 	cfg.RepoOwner = os.Getenv("REPO_OWNER")

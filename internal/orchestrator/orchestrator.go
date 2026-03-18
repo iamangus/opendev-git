@@ -2,30 +2,31 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/google/go-github/v84/github"
 	"github.com/iamangus/opendev-git/internal/agent"
+	"github.com/iamangus/opendev-git/internal/codemcp"
 	"github.com/iamangus/opendev-git/internal/config"
 	githubclient "github.com/iamangus/opendev-git/internal/github"
-	"github.com/iamangus/opendev-git/internal/tools"
 )
 
 // Orchestrator drives the issue lifecycle from investigation through execution.
 type Orchestrator struct {
-	config *config.Config
-	github *githubclient.Client
-	tools  *tools.Tools
-	agent  *agent.Client
+	config  *config.Config
+	github  *githubclient.Client
+	agent   *agent.Client
+	codemcp *codemcp.Client
 }
 
 // New creates an Orchestrator. The GitHub client can be nil at construction time
 // and supplied per-event via WithGitHubClient.
-func New(cfg *config.Config, gh *githubclient.Client, t *tools.Tools, a *agent.Client) *Orchestrator {
+func New(cfg *config.Config, gh *githubclient.Client, a *agent.Client, cm *codemcp.Client) *Orchestrator {
 	return &Orchestrator{
-		config: cfg,
-		github: gh,
-		tools:  t,
-		agent:  a,
+		config:  cfg,
+		github:  gh,
+		agent:   a,
+		codemcp: cm,
 	}
 }
 
@@ -59,13 +60,19 @@ func (o *Orchestrator) HandleMention(ctx context.Context, owner, repo string, is
 		return o.runInvestigation(ctx, owner, repo, issue)
 	}
 
+	// Resolve default branch (needed by planning and execution for code-mcp).
+	defaultBranch, _, err := o.github.GetDefaultBranch(ctx, owner, repo)
+	if err != nil {
+		return fmt.Errorf("get default branch: %w", err)
+	}
+
 	// Check current status from labels.
 	if issueHasLabel(issue, "status:planned") || issueHasLabel(issue, "status:approved") {
-		return o.runExecution(ctx, owner, repo, issue, investigationComment)
+		return o.runExecution(ctx, owner, repo, issue, investigationComment, defaultBranch)
 	}
 
 	// Default: re-run planning.
-	return o.runPlanning(ctx, owner, repo, issue, investigationComment)
+	return o.runPlanning(ctx, owner, repo, issue, investigationComment, defaultBranch)
 }
 
 // transitionStatus removes the old status label and adds the new one.

@@ -4,38 +4,60 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/google/go-github/v84/github"
 	"github.com/iamangus/opendev-git/internal/agent"
-	"github.com/iamangus/opendev-git/internal/tools"
+	"github.com/iamangus/opendev-git/internal/mcpclient"
 )
 
 const maxRetries = 3
 
 // runExecution implements the in-progress phase: branch creation, code generation,
-// test execution, and PR creation.
+// test execution via code-mcp, and PR creation.
 //
 // Steps:
-//  1. Get default branch SHA
-//  2. Create branch opendev-git/issue-{number}
-//  3. Set status:in-progress
-//  4. Parse tasks from investigation comment
-//  5. For each task: generate tests → generate impl → run tests → commit or retry
-//  6. Open PR with summary
-func (o *Orchestrator) runExecution(ctx context.Context, owner, repo string, issue *github.Issue, investigationComment string) error {
+//  1. Get installation token for code-mcp repo cloning
+//  2. Ensure repo is present in code-mcp
+//  3. Create branch via GitHub API
+//  4. Create branch worktree in code-mcp
+//  5. Set status:in-progress
+//  6. Parse tasks from investigation comment
+//  7. For each task: agent writes code via write MCP → run tests → retry on failure
+//  8. Push branch to origin via code-mcp
+//  9. Open PR
+//
+// 10. Async cleanup of worktree
+func (o *Orchestrator) runExecution(ctx context.Context, owner, repo string, issue *github.Issue, investigationComment, defaultBranch string) error {
 	number := issue.GetNumber()
 
-	defaultBranch, baseSHA, err := o.github.GetDefaultBranch(ctx, owner, repo)
+	_, baseSHA, err := o.github.GetDefaultBranch(ctx, owner, repo)
 	if err != nil {
 		return fmt.Errorf("get default branch: %w", err)
 	}
 
-	branchName := fmt.Sprintf("opendev-git/issue-%d", number)
+	// Get an installation token so code-mcp can clone/authenticate.
+	token, err := o.github.GetInstallationToken(ctx)
+	if err != nil {
+		return fmt.Errorf("get installation token: %w", err)
+	}
+
+	// Ensure the repo is present in code-mcp (idempotent).
+	cloneURL := "https://github.com/" + owner + "/" + repo
+	if err := o.codemcp.EnsureRepo(ctx, repo, cloneURL, token); err != nil {
+		return fmt.Errorf("ensure repo in code-mcp: %w", err)
+	}
+
+	branchName := fmt.Sprintf("opendev-git-issue-%d", number)
+
+	// Create the git ref on GitHub.
 	if err := o.github.CreateBranch(ctx, owner, repo, branchName, baseSHA); err != nil {
 		return fmt.Errorf("create branch %q: %w", branchName, err)
+	}
+
+	// Create the worktree in code-mcp.
+	if err := o.codemcp.EnsureBranch(ctx, repo, branchName, defaultBranch); err != nil {
+		return fmt.Errorf("create branch worktree in code-mcp: %w", err)
 	}
 
 	if err := o.transitionStatus(ctx, owner, repo, number, "", "status:in-progress"); err != nil {
@@ -48,14 +70,11 @@ func (o *Orchestrator) runExecution(ctx context.Context, owner, repo string, iss
 	}
 
 	completedTasks := make([]string, 0, len(tasks))
-	var allChanges []string
 
 	for i, task := range tasks {
 		log.Printf("orchestrator: executing task %d/%d: %s", i+1, len(tasks), task)
 
-		changes, err := o.executeTask(ctx, owner, repo, issue, branchName, task)
-		if err != nil {
-			// Post blocked comment and stop.
+		if err := o.executeTask(ctx, owner, repo, issue, branchName, task); err != nil {
 			blockedMsg := fmt.Sprintf(
 				"I was unable to complete task **%s** after %d attempts.\n\nError: %s\n\n"+
 					"Please review and reply mentioning @opendev-git to retry.",
@@ -67,14 +86,18 @@ func (o *Orchestrator) runExecution(ctx context.Context, owner, repo string, iss
 		}
 
 		completedTasks = append(completedTasks, task)
-		allChanges = append(allChanges, changes...)
 
 		// Check off the task in the investigation comment (best-effort).
 		_ = o.checkOffTask(ctx, owner, repo, number, task)
 	}
 
-	// Build PR body.
-	prBody := buildPRBody(number, completedTasks, allChanges)
+	// Push branch to origin before opening the PR.
+	if err := o.codemcp.PushBranch(ctx, repo, branchName); err != nil {
+		return fmt.Errorf("push branch %q: %w", branchName, err)
+	}
+
+	// Open the PR.
+	prBody := buildPRBody(number, completedTasks)
 	prTitle := fmt.Sprintf("fix: resolve issue #%d", number)
 
 	pr, err := o.github.CreatePR(ctx, owner, repo, prTitle, prBody, branchName, defaultBranch)
@@ -94,129 +117,84 @@ func (o *Orchestrator) runExecution(ctx context.Context, owner, repo string, iss
 	)
 	_ = o.github.PostComment(ctx, owner, repo, number, doneMsg)
 
+	// Best-effort async cleanup of the worktree.
+	go func() {
+		if err := o.codemcp.DeleteBranch(context.Background(), repo, branchName); err != nil {
+			log.Printf("orchestrator: cleanup worktree %q/%q: %v", repo, branchName, err)
+		}
+	}()
+
 	return nil
 }
 
-// executeTask generates and commits code for a single task, retrying on test failure.
-func (o *Orchestrator) executeTask(ctx context.Context, owner, repo string, issue *github.Issue, branch, task string) ([]string, error) {
+// executeTask asks the agent to implement a single task via the write MCP endpoint,
+// then runs tests via code-mcp. Retries up to maxRetries times on test failure.
+func (o *Orchestrator) executeTask(ctx context.Context, owner, repo string, issue *github.Issue, branch, task string) error {
+	writeMCP := []mcpclient.ServerConfig{{
+		Name:      "code",
+		URL:       o.codemcp.MCPWriteURL(repo, branch),
+		Transport: "streamable-http",
+	}}
+
+	var lastTestOutput string
+
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		log.Printf("orchestrator: task attempt %d/%d: %s", attempt, maxRetries, task)
 
-		files, testOutput, testPassed, err := o.generateAndTest(ctx, owner, repo, issue, branch, task, attempt)
+		if err := o.generateCode(ctx, issue, branch, task, attempt, lastTestOutput, writeMCP); err != nil {
+			return err
+		}
+
+		passed, output, err := o.codemcp.RunTests(ctx, repo, branch)
 		if err != nil {
-			return nil, err
+			return fmt.Errorf("run tests (attempt %d): %w", attempt, err)
 		}
 
-		if testPassed {
-			// Commit files.
-			for path, content := range files {
-				sha, _ := o.github.GetFileSHA(ctx, owner, repo, path, branch)
-				commitMsg := fmt.Sprintf("feat: %s (issue #%d)", task, issue.GetNumber())
-				if err := o.github.CreateOrUpdateFile(ctx, owner, repo, path, commitMsg, branch, []byte(content), sha); err != nil {
-					return nil, fmt.Errorf("commit file %q: %w", path, err)
-				}
-			}
-			filePaths := make([]string, 0, len(files))
-			for p := range files {
-				filePaths = append(filePaths, p)
-			}
-			return filePaths, nil
+		if passed {
+			return nil
 		}
 
-		log.Printf("orchestrator: tests failed (attempt %d): %s", attempt, testOutput)
+		log.Printf("orchestrator: tests failed (attempt %d): %s", attempt, output)
+		lastTestOutput = output
 	}
 
-	return nil, fmt.Errorf("tests did not pass after %d attempts", maxRetries)
+	return fmt.Errorf("tests did not pass after %d attempts", maxRetries)
 }
 
-// generateAndTest asks the agent to generate code and then runs tests.
-func (o *Orchestrator) generateAndTest(ctx context.Context, owner, repo string, issue *github.Issue, branch, task string, attempt int) (map[string]string, string, bool, error) {
-	// Step 1: Ask agent to generate test code.
-	testCtx := fmt.Sprintf(
-		"You are implementing a GitHub issue. Generate test code for the following task.\n\n"+
-			"## Issue\n%s\n\n"+
-			"## Task\n%s\n\n"+
-			"## Attempt\n%d of %d\n\n"+
-			"Respond with the test file path and content in this format:\n"+
-			"FILE: <path>\n```\n<content>\n```\n\n"+
-			"Set done:true when you have provided the test code.",
-		buildIssueContext(issue), task, attempt, maxRetries,
-	)
-
-	testResp, err := o.agent.Send(ctx, agent.Request{
-		Phase:   "execution_tests",
-		Context: testCtx,
-	})
-	if err != nil {
-		return nil, "", false, fmt.Errorf("agent test generation: %w", err)
+// generateCode asks the agent to implement the task by writing files directly
+// into the worktree via the write MCP endpoint.
+func (o *Orchestrator) generateCode(ctx context.Context, issue *github.Issue, branch, task string, attempt int, previousTestOutput string, mcpServers []mcpclient.ServerConfig) error {
+	retryContext := ""
+	if previousTestOutput != "" {
+		retryContext = fmt.Sprintf("\n\n## Previous Test Failure (attempt %d)\n%s\n\nPlease fix the above failures.", attempt-1, previousTestOutput)
 	}
 
-	testFiles := parseFileBlocks(testResp.Text)
-
-	// Step 2: Ask agent to generate implementation code.
 	implCtx := fmt.Sprintf(
-		"You are implementing a GitHub issue. Generate implementation code for the following task.\n\n"+
+		"You are implementing a GitHub issue. Use the MCP tools to write code directly into the repository worktree.\n\n"+
 			"## Issue\n%s\n\n"+
 			"## Task\n%s\n\n"+
-			"## Test Code\n%s\n\n"+
-			"Respond with the implementation file path and content in this format:\n"+
-			"FILE: <path>\n```\n<content>\n```\n\n"+
-			"Set done:true when you have provided the implementation.",
-		buildIssueContext(issue), task, testResp.Text,
+			"## Branch\n%s\n\n"+
+			"## Attempt\n%d of %d\n"+
+			"%s\n\n"+
+			"Use the create_file and search_and_replace MCP tools to write implementation and test files directly. "+
+			"When you have finished writing all necessary files, respond with done:true.",
+		buildIssueContext(issue), task, branch, attempt, maxRetries, retryContext,
 	)
 
-	implResp, err := o.agent.Send(ctx, agent.Request{
-		Phase:   "execution_impl",
-		Context: implCtx,
+	resp, err := o.agent.Send(ctx, agent.Request{
+		Phase:      "execution",
+		Context:    implCtx,
+		MCPServers: mcpServers,
 	})
 	if err != nil {
-		return nil, "", false, fmt.Errorf("agent impl generation: %w", err)
+		return fmt.Errorf("agent execution send: %w", err)
 	}
 
-	implFiles := parseFileBlocks(implResp.Text)
-
-	// Merge test and impl files.
-	allFiles := make(map[string]string)
-	for k, v := range testFiles {
-		allFiles[k] = v
-	}
-	for k, v := range implFiles {
-		allFiles[k] = v
+	if !resp.Done {
+		log.Printf("orchestrator: execution agent did not signal done for task %q (attempt %d)", task, attempt)
 	}
 
-	// Write files directly to workspace (avoids shell injection).
-	workspaceDir := o.config.WorkspaceDir
-	for filePath, content := range allFiles {
-		// Only write relative paths to avoid escaping the workspace.
-		if filepath.IsAbs(filePath) {
-			log.Printf("orchestrator: skipping absolute path %q", filePath)
-			continue
-		}
-		absPath := filepath.Clean(filepath.Join(workspaceDir, filePath))
-		workspaceClean := filepath.Clean(workspaceDir)
-		if !strings.HasPrefix(absPath, workspaceClean+string(filepath.Separator)) && absPath != workspaceClean {
-			log.Printf("orchestrator: skipping path outside workspace %q", filePath)
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
-			log.Printf("orchestrator: mkdir for %q: %v", absPath, err)
-			continue
-		}
-		if err := os.WriteFile(absPath, []byte(content), 0o644); err != nil {
-			log.Printf("orchestrator: write file %q: %v", absPath, err)
-		}
-	}
-
-	// Run tests; exit code determines pass/fail.
-	testResult := o.tools.Execute(ctx, tools.ToolCall{
-		Name: "run_command",
-		Args: map[string]string{"cmd": "go test ./... 2>&1"},
-	})
-
-	// runCommand prefixes output with "command error (...)" on non-zero exit.
-	passed := !strings.HasPrefix(testResult.Output, "command error")
-
-	return allFiles, testResult.Output, passed, nil
+	return nil
 }
 
 // parseTasks extracts unchecked checkbox items from the investigation comment.
@@ -262,71 +240,21 @@ func (o *Orchestrator) checkOffTask(ctx context.Context, owner, repo string, iss
 	return nil
 }
 
-// parseFileBlocks extracts FILE: path / ``` content ``` blocks from agent text.
-func parseFileBlocks(text string) map[string]string {
-	files := make(map[string]string)
-	lines := strings.Split(text, "\n")
-
-	var currentPath string
-	var inBlock bool
-	var buf strings.Builder
-
-	for _, line := range lines {
-		if strings.HasPrefix(line, "FILE: ") {
-			currentPath = strings.TrimPrefix(line, "FILE: ")
-			currentPath = strings.TrimSpace(currentPath)
-			buf.Reset()
-			inBlock = false
-			continue
-		}
-		if currentPath != "" {
-			if !inBlock && strings.HasPrefix(line, "```") {
-				inBlock = true
-				continue
-			}
-			if inBlock {
-				if strings.TrimSpace(line) == "```" {
-					files[currentPath] = buf.String()
-					currentPath = ""
-					inBlock = false
-					buf.Reset()
-					continue
-				}
-				buf.WriteString(line)
-				buf.WriteString("\n")
-			}
-		}
-	}
-	return files
-}
-
-// buildPRBody constructs the PR description following the standard template:
-// Summary, Changes (committed files), Tests, Docs, and the closing reference to the issue.
-func buildPRBody(issueNumber int, tasks, changes []string) string {
-	var changeList strings.Builder
-	for _, c := range changes {
-		changeList.WriteString("- `" + c + "`\n")
-	}
-
+// buildPRBody constructs the PR description.
+func buildPRBody(issueNumber int, tasks []string) string {
 	var taskList strings.Builder
 	for _, t := range tasks {
-		taskList.WriteString("- [x] " + t + " — passed\n")
+		taskList.WriteString("- [x] " + t + "\n")
 	}
 
 	return fmt.Sprintf(`## Summary
 Automated implementation of issue #%d.
 
-## Changes
+## Tasks Completed
 %s
-## Tests
-%s
-## Docs
-N/A
-
 ## Related Issue
 Closes #%d`,
 		issueNumber,
-		changeList.String(),
 		taskList.String(),
 		issueNumber,
 	)

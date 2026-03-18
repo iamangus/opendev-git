@@ -38,54 +38,6 @@ func TestParseTasksEmpty(t *testing.T) {
 	}
 }
 
-func TestParseFileBlocks(t *testing.T) {
-	text := `Here is the implementation:
-
-FILE: internal/foo/foo.go
-` + "```" + `
-package foo
-
-func Foo() {}
-` + "```" + `
-
-FILE: internal/foo/foo_test.go
-` + "```" + `
-package foo
-
-import "testing"
-
-func TestFoo(t *testing.T) {}
-` + "```"
-
-	files := parseFileBlocks(text)
-	if len(files) != 2 {
-		t.Fatalf("expected 2 files, got %d: %v", len(files), files)
-	}
-
-	fooContent, ok := files["internal/foo/foo.go"]
-	if !ok {
-		t.Fatal("missing internal/foo/foo.go")
-	}
-	if !strings.Contains(fooContent, "func Foo()") {
-		t.Errorf("foo.go content unexpected: %q", fooContent)
-	}
-
-	testContent, ok := files["internal/foo/foo_test.go"]
-	if !ok {
-		t.Fatal("missing internal/foo/foo_test.go")
-	}
-	if !strings.Contains(testContent, "func TestFoo") {
-		t.Errorf("foo_test.go content unexpected: %q", testContent)
-	}
-}
-
-func TestParseFileBlocksEmpty(t *testing.T) {
-	files := parseFileBlocks("no file blocks here")
-	if len(files) != 0 {
-		t.Errorf("expected 0 files, got %d", len(files))
-	}
-}
-
 func TestBuildInvestigationComment(t *testing.T) {
 	comment := buildInvestigationComment("Found X", "- [ ] Fix X", "Risk Y")
 	if !strings.Contains(comment, "## Investigation Complete") {
@@ -153,21 +105,18 @@ func TestParseInvestigationResponseNoSections(t *testing.T) {
 }
 
 func TestBuildPRBody(t *testing.T) {
-	body := buildPRBody(42, []string{"Add logging", "Fix bug"}, []string{"internal/log.go", "internal/bug.go"})
+	body := buildPRBody(42, []string{"Add logging", "Fix bug"})
 	if !strings.Contains(body, "Closes #42") {
 		t.Error("missing Closes #42")
 	}
 	if !strings.Contains(body, "Add logging") {
 		t.Error("missing task 'Add logging'")
 	}
-	if !strings.Contains(body, "internal/log.go") {
-		t.Error("missing changed file")
-	}
 	if !strings.Contains(body, "## Summary") {
 		t.Error("missing ## Summary")
 	}
-	if !strings.Contains(body, "## Changes") {
-		t.Error("missing ## Changes")
+	if !strings.Contains(body, "## Tasks Completed") {
+		t.Error("missing ## Tasks Completed")
 	}
 }
 

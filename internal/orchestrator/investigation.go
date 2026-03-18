@@ -8,19 +8,19 @@ import (
 
 	"github.com/google/go-github/v84/github"
 	"github.com/iamangus/opendev-git/internal/agent"
-	"github.com/iamangus/opendev-git/internal/tools"
+	"github.com/iamangus/opendev-git/internal/mcpclient"
 )
 
 // runInvestigation drives the investigation phase for an issue.
 //
 // Steps:
 //  1. Set status:investigating
-//  2. Build initial context from issue title + body
-//  3. Loop: send to agent, execute tool calls, feed results back
-//     - Stop when agent says done:true or tool budget exceeded
-//     - If agent asks a question (no tool calls, not done) → post comment, set status:blocked
-//  4. Post "## Investigation Complete" comment
-//  5. Transition to planning phase
+//  2. Determine the default branch and set up code-mcp repo/worktree for read access
+//  3. Build initial context from issue title + body
+//  4. Loop: send to agent (with read MCP) until done:true or budget exceeded
+//     - If agent asks a question (not done) → post comment, set status:blocked
+//  5. Post "## Investigation Complete" comment
+//  6. Transition to planning phase
 func (o *Orchestrator) runInvestigation(ctx context.Context, owner, repo string, issue *github.Issue) error {
 	number := issue.GetNumber()
 
@@ -28,15 +28,40 @@ func (o *Orchestrator) runInvestigation(ctx context.Context, owner, repo string,
 		return fmt.Errorf("set investigating status: %w", err)
 	}
 
+	// Get default branch so we can set up a code-mcp read worktree.
+	defaultBranch, _, err := o.github.GetDefaultBranch(ctx, owner, repo)
+	if err != nil {
+		return fmt.Errorf("get default branch: %w", err)
+	}
+
+	// Ensure code-mcp has the repo cloned and a worktree for the default branch.
+	token, err := o.github.GetInstallationToken(ctx)
+	if err != nil {
+		return fmt.Errorf("get installation token: %w", err)
+	}
+	cloneURL := "https://github.com/" + owner + "/" + repo
+	if err := o.codemcp.EnsureRepo(ctx, repo, cloneURL, token); err != nil {
+		return fmt.Errorf("ensure repo in code-mcp: %w", err)
+	}
+	if err := o.codemcp.EnsureBranch(ctx, repo, defaultBranch, defaultBranch); err != nil {
+		return fmt.Errorf("ensure default branch worktree in code-mcp: %w", err)
+	}
+
+	// Build MCP server config for read access to the default branch.
+	readMCP := []mcpclient.ServerConfig{{
+		Name:      "code",
+		URL:       o.codemcp.MCPReadURL(repo, defaultBranch),
+		Transport: "streamable-http",
+	}}
+
 	// Build initial context.
 	issueContext := buildIssueContext(issue)
-
 	agentCtx := fmt.Sprintf(
-		"You are investigating a GitHub issue. Use the available tools to understand the codebase and propose a plan.\n\n%s",
+		"You are investigating a GitHub issue. Use the available MCP tools to explore the codebase and propose a plan.\n\n%s",
 		issueContext,
 	)
 
-	findings, proposedTasks, risks, err := o.runAgentLoop(ctx, "investigation", agentCtx, owner, repo, number)
+	findings, proposedTasks, risks, err := o.runAgentLoop(ctx, "investigation", agentCtx, owner, repo, number, readMCP)
 	if err != nil {
 		return err
 	}
@@ -48,25 +73,27 @@ func (o *Orchestrator) runInvestigation(ctx context.Context, owner, repo string,
 	}
 
 	// Move to planning.
-	return o.runPlanning(ctx, owner, repo, issue, investigationBody)
+	return o.runPlanning(ctx, owner, repo, issue, investigationBody, defaultBranch)
 }
 
-// runAgentLoop sends messages to the agent in a loop, executing tool calls until
-// the agent is done or the tool budget is exhausted. Returns parsed findings/tasks/risks.
-func (o *Orchestrator) runAgentLoop(ctx context.Context, phase, initialContext, owner, repo string, issueNumber int) (findings, proposedTasks, risks string, err error) {
+// runAgentLoop sends messages to the agent in a loop until the agent signals
+// done:true or the tool budget is exhausted. Returns parsed findings/tasks/risks.
+// mcpServers is forwarded to every agent.Request so the agent can use MCP tools.
+func (o *Orchestrator) runAgentLoop(ctx context.Context, phase, initialContext, owner, repo string, issueNumber int, mcpServers []mcpclient.ServerConfig) (findings, proposedTasks, risks string, err error) {
 	agentCtx := initialContext
 	budget := o.config.ToolBudget
 
 	for i := 0; i <= budget; i++ {
 		resp, sendErr := o.agent.Send(ctx, agent.Request{
-			Phase:   phase,
-			Context: agentCtx,
+			Phase:      phase,
+			Context:    agentCtx,
+			MCPServers: mcpServers,
 		})
 		if sendErr != nil {
 			return "", "", "", fmt.Errorf("agent send: %w", sendErr)
 		}
 
-		log.Printf("orchestrator: agent phase=%s done=%v tool_calls=%d", phase, resp.Done, len(resp.ToolCalls))
+		log.Printf("orchestrator: agent phase=%s done=%v", phase, resp.Done)
 
 		if resp.Done {
 			// Agent finished — parse its final text for structured output.
@@ -74,32 +101,7 @@ func (o *Orchestrator) runAgentLoop(ctx context.Context, phase, initialContext, 
 			return findings, proposedTasks, risks, nil
 		}
 
-		if len(resp.ToolCalls) > 0 {
-			// Execute tool calls and append results.
-			var sb strings.Builder
-			sb.WriteString(agentCtx)
-			sb.WriteString("\n\n### Agent Response\n")
-			sb.WriteString(resp.Text)
-			sb.WriteString("\n\n### Tool Results\n")
-
-			for _, tc := range resp.ToolCalls {
-				result := o.tools.Execute(ctx, tools.ToolCall{
-					Name: tc.Name,
-					Args: tc.Args,
-				})
-				sb.WriteString(fmt.Sprintf("\n#### %s\n", tc.Name))
-				if result.Error != "" {
-					sb.WriteString(fmt.Sprintf("Error: %s\n", result.Error))
-				} else {
-					sb.WriteString(result.Output)
-					sb.WriteString("\n")
-				}
-			}
-			agentCtx = sb.String()
-			continue
-		}
-
-		// Agent returned text with no tool calls and done=false → it's asking a question.
+		// Agent returned text with done=false → it's asking a question.
 		blockedMsg := fmt.Sprintf(
 			"I need some clarification before I can proceed:\n\n%s\n\n"+
 				"Please reply mentioning @opendev-git to continue.",
@@ -114,7 +116,7 @@ func (o *Orchestrator) runAgentLoop(ctx context.Context, phase, initialContext, 
 		return "", "", "", fmt.Errorf("agent blocked waiting for user input")
 	}
 
-	// Budget exhausted — use whatever the last response was.
+	// Budget exhausted — use whatever was last parsed.
 	log.Printf("orchestrator: tool budget exhausted for issue #%d", issueNumber)
 	return findings, proposedTasks, risks, nil
 }

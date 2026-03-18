@@ -12,7 +12,8 @@ import (
 
 // Client wraps the go-github client with helper methods.
 type Client struct {
-	gh *github.Client
+	gh  *github.Client
+	itr *ghinstallation.Transport
 }
 
 // NewClient creates a GitHub client authenticated as a GitHub App installation.
@@ -33,7 +34,18 @@ func NewClient(cfg *config.Config, installationID int64) (*Client, error) {
 	}
 
 	gh := github.NewClient(&http.Client{Transport: itr})
-	return &Client{gh: gh}, nil
+	return &Client{gh: gh, itr: itr}, nil
+}
+
+// GetInstallationToken returns a valid installation access token that external
+// services (e.g. code-mcp) can use to authenticate against GitHub.
+// The token is cached and refreshed automatically by the underlying transport.
+func (c *Client) GetInstallationToken(ctx context.Context) (string, error) {
+	token, err := c.itr.Token(ctx)
+	if err != nil {
+		return "", fmt.Errorf("get installation token: %w", err)
+	}
+	return token, nil
 }
 
 // GetIssue returns a single issue.

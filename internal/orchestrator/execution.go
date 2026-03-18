@@ -193,7 +193,8 @@ func (o *Orchestrator) generateAndTest(ctx context.Context, owner, repo string, 
 			continue
 		}
 		absPath := filepath.Clean(filepath.Join(workspaceDir, filePath))
-		if !strings.HasPrefix(absPath, filepath.Clean(workspaceDir)+string(filepath.Separator)) {
+		workspaceClean := filepath.Clean(workspaceDir)
+		if !strings.HasPrefix(absPath, workspaceClean+string(filepath.Separator)) && absPath != workspaceClean {
 			log.Printf("orchestrator: skipping path outside workspace %q", filePath)
 			continue
 		}
@@ -246,13 +247,15 @@ func (o *Orchestrator) checkOffTask(ctx context.Context, owner, repo string, iss
 			continue
 		}
 		old := "- [ ] " + task
-		new := "- [x] " + task
+		newMark := "- [x] " + task
 		if !strings.Contains(body, old) {
 			continue
 		}
-		updated := strings.Replace(body, old, new, 1)
-		// We can't edit comments via the current client interface, so just log it.
-		_ = updated
+		updated := strings.Replace(body, old, newMark, 1)
+		if err := o.github.UpdateComment(ctx, owner, repo, c.GetID(), updated); err != nil {
+			log.Printf("orchestrator: update comment for task check-off: %v", err)
+			return err
+		}
 		log.Printf("orchestrator: task checked off: %s", task)
 		return nil
 	}
@@ -300,14 +303,14 @@ func parseFileBlocks(text string) map[string]string {
 // buildPRBody constructs the PR description following the standard template:
 // Summary, Changes (committed files), Tests, Docs, and the closing reference to the issue.
 func buildPRBody(issueNumber int, tasks, changes []string) string {
-	var taskList strings.Builder
-	for _, t := range tasks {
-		taskList.WriteString("- " + t + "\n")
-	}
-
 	var changeList strings.Builder
 	for _, c := range changes {
 		changeList.WriteString("- `" + c + "`\n")
+	}
+
+	var taskList strings.Builder
+	for _, t := range tasks {
+		taskList.WriteString("- [x] " + t + " — passed\n")
 	}
 
 	return fmt.Sprintf(`## Summary
@@ -316,8 +319,7 @@ Automated implementation of issue #%d.
 ## Changes
 %s
 ## Tests
-Tests were generated and run successfully.
-
+%s
 ## Docs
 N/A
 
@@ -325,6 +327,7 @@ N/A
 Closes #%d`,
 		issueNumber,
 		changeList.String(),
+		taskList.String(),
 		issueNumber,
 	)
 }

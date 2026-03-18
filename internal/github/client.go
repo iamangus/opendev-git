@@ -182,6 +182,16 @@ func (c *Client) CreateOrUpdateFile(ctx context.Context, owner, repo, path, mess
 	return nil
 }
 
+// UpdateComment edits the body of an existing issue comment.
+func (c *Client) UpdateComment(ctx context.Context, owner, repo string, commentID int64, body string) error {
+	comment := &github.IssueComment{Body: github.Ptr(body)}
+	_, _, err := c.gh.Issues.EditComment(ctx, owner, repo, commentID, comment)
+	if err != nil {
+		return fmt.Errorf("update comment %d: %w", commentID, err)
+	}
+	return nil
+}
+
 // GetFileSHA returns the blob SHA of a file on the given branch, or "" if not found.
 func (c *Client) GetFileSHA(ctx context.Context, owner, repo, path, branch string) (string, error) {
 	opts := &github.RepositoryContentGetOptions{Ref: branch}

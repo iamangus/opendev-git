@@ -175,7 +175,7 @@ func (o *Orchestrator) generateCode(ctx context.Context, issue *github.Issue, br
 	)
 
 	resp, err := o.agent.Send(ctx, agent.Request{
-		Phase:      "execution",
+		AgentName:  o.config.AgentExecution,
 		Context:    implCtx,
 		MCPServers: mcpServers,
 	})

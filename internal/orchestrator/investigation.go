@@ -65,7 +65,7 @@ func (o *Orchestrator) runInvestigation(ctx context.Context, owner, repo string,
 		issueContext,
 	)
 
-	findings, proposedTasks, risks, err := o.runAgentLoop(ctx, "investigation", agentCtx, history, owner, repo, number, readMCP)
+	findings, proposedTasks, risks, err := o.runAgentLoop(ctx, o.config.AgentInvestigation, agentCtx, history, owner, repo, number, readMCP)
 	if err != nil {
 		return err
 	}
@@ -91,7 +91,7 @@ func (o *Orchestrator) runInvestigation(ctx context.Context, owner, repo string,
 //
 // The canceled run causes PollRun to return an error, which propagates cleanly
 // up to the caller.
-func (o *Orchestrator) runAgentLoop(ctx context.Context, phase, initialContext string, history []agent.Message, owner, repo string, issueNumber int, mcpServers []mcpclient.ServerConfig) (findings, proposedTasks, risks string, err error) {
+func (o *Orchestrator) runAgentLoop(ctx context.Context, agentName, initialContext string, history []agent.Message, owner, repo string, issueNumber int, mcpServers []mcpclient.ServerConfig) (findings, proposedTasks, risks string, err error) {
 	// 1. Start the ephemeral internal MCP server (run ID not yet known).
 	mcpSrv, err := internalmcp.New(owner, repo, issueNumber, o.github, o, o.agent)
 	if err != nil {
@@ -110,7 +110,7 @@ func (o *Orchestrator) runAgentLoop(ctx context.Context, phase, initialContext s
 
 	// 3. Start the run — get the run ID immediately.
 	runID, err := o.agent.StartRun(ctx, agent.Request{
-		Phase:      phase,
+		AgentName:  agentName,
 		Context:    initialContext,
 		History:    history,
 		MCPServers: allServers,
@@ -129,7 +129,7 @@ func (o *Orchestrator) runAgentLoop(ctx context.Context, phase, initialContext s
 		return "", "", "", fmt.Errorf("agent send: %w", pollErr)
 	}
 
-	log.Printf("orchestrator: agent phase=%s completed", phase)
+	log.Printf("orchestrator: agent %q completed", agentName)
 
 	findings, proposedTasks, risks = parseInvestigationResponse(resp.Text)
 	return findings, proposedTasks, risks, nil

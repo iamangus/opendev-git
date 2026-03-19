@@ -60,7 +60,7 @@ func (o *Orchestrator) runPlanning(ctx context.Context, owner, repo string, issu
 	}, readMCP...)
 
 	runID, err := o.agent.StartRun(ctx, agent.Request{
-		Phase:      "planning",
+		AgentName:  o.config.AgentPlanning,
 		Context:    planCtx,
 		History:    history,
 		MCPServers: allServers,

@@ -22,7 +22,7 @@ type Message struct {
 
 // Request is the payload sent to start an agent run.
 type Request struct {
-	Phase      string                   `json:"phase"`
+	AgentName  string                   `json:"agent_name"`
 	Context    string                   `json:"context"`
 	History    []Message                `json:"history,omitempty"`
 	MCPServers []mcpclient.ServerConfig `json:"mcp_servers,omitempty"`
@@ -124,7 +124,7 @@ func (c *Client) startRun(ctx context.Context, req Request) (string, error) {
 		return "", fmt.Errorf("marshal run request: %w", err)
 	}
 
-	url := c.baseURL + "/api/v1/agents/" + req.Phase + "/run"
+	url := c.baseURL + "/api/v1/agents/" + req.AgentName + "/run"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("build run request: %w", err)

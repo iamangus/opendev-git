@@ -19,6 +19,15 @@ type Config struct {
 	RepoName            string
 	WorkspaceDir        string // local workspace dir for tool operations (default: /workspace)
 	ToolBudget          int    // max tool calls per phase (default: 20)
+
+	// Agent name mappings — each field maps a specific logical call in the
+	// orchestrator to a named agent definition in opendev-agents. Set the
+	// corresponding environment variable to point any call at a different agent
+	// without touching code. Add a new field here for every new agent call
+	// introduced in the orchestrator.
+	AgentInvestigation string // AGENT_INVESTIGATION (default: "investigation")
+	AgentPlanning      string // AGENT_PLANNING      (default: "planning")
+	AgentExecution     string // AGENT_EXECUTION     (default: "execution")
 }
 
 // Load reads configuration from environment variables.
@@ -61,6 +70,10 @@ func Load() (*Config, error) {
 
 	cfg.RepoOwner = os.Getenv("REPO_OWNER")
 	cfg.RepoName = os.Getenv("REPO_NAME")
+
+	cfg.AgentInvestigation = getEnv("AGENT_INVESTIGATION", "investigation")
+	cfg.AgentPlanning = getEnv("AGENT_PLANNING", "planning")
+	cfg.AgentExecution = getEnv("AGENT_EXECUTION", "execution")
 
 	toolBudgetStr := getEnv("TOOL_BUDGET", "20")
 	toolBudget, err := strconv.Atoi(toolBudgetStr)

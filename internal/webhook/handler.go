@@ -69,9 +69,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // issuesPayload is the minimal structure we need from a GitHub issues event.
 type issuesPayload struct {
-	Action string        `json:"action"`
-	Issue  *github.Issue `json:"issue"`
-	Label  *github.Label `json:"label"`
+	Action       string        `json:"action"`
+	Issue        *github.Issue `json:"issue"`
+	Label        *github.Label `json:"label"`
 	Installation struct {
 		ID int64 `json:"id"`
 	} `json:"installation"`
@@ -85,9 +85,9 @@ type issuesPayload struct {
 
 // issueCommentPayload is the minimal structure we need from a GitHub issue_comment event.
 type issueCommentPayload struct {
-	Action  string               `json:"action"`
-	Issue   *github.Issue        `json:"issue"`
-	Comment *github.IssueComment `json:"comment"`
+	Action       string               `json:"action"`
+	Issue        *github.Issue        `json:"issue"`
+	Comment      *github.IssueComment `json:"comment"`
 	Installation struct {
 		ID int64 `json:"id"`
 	} `json:"installation"`
@@ -155,6 +155,12 @@ func (h *Handler) handleIssueCommentEvent(body []byte) {
 		return
 	}
 	if payload.Issue == nil || payload.Comment == nil {
+		return
+	}
+
+	// Ignore comments from bot accounts (including ourselves) to prevent
+	// feedback loops where the bot's own ask_user message triggers a new run.
+	if login := payload.Comment.GetUser().GetLogin(); strings.HasSuffix(login, "[bot]") {
 		return
 	}
 

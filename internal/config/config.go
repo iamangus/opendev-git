@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Config holds all runtime configuration loaded from environment variables.
@@ -81,7 +82,7 @@ func Load() (*Config, error) {
 	cfg.AgentInvestigation = getEnv("AGENT_INVESTIGATION", "investigation")
 	cfg.AgentPlanning = getEnv("AGENT_PLANNING", "planning")
 	cfg.AgentExecution = getEnv("AGENT_EXECUTION", "execution")
-	cfg.InternalMCPHost = getEnv("INTERNAL_MCP_HOST", "127.0.0.1")
+	cfg.InternalMCPHost = stripScheme(getEnv("INTERNAL_MCP_HOST", "127.0.0.1"))
 
 	toolBudgetStr := getEnv("TOOL_BUDGET", "20")
 	toolBudget, err := strconv.Atoi(toolBudgetStr)
@@ -98,4 +99,13 @@ func getEnv(key, defaultVal string) string {
 		return v
 	}
 	return defaultVal
+}
+
+// stripScheme removes a leading http:// or https:// scheme and any trailing
+// slashes from s, returning a bare host (or host:port). This makes
+// INTERNAL_MCP_HOST tolerant of values like "https://opendev-git.srvd.dev".
+func stripScheme(s string) string {
+	s = strings.TrimPrefix(s, "https://")
+	s = strings.TrimPrefix(s, "http://")
+	return strings.TrimRight(s, "/")
 }

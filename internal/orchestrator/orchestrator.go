@@ -9,24 +9,27 @@ import (
 	"github.com/iamangus/opendev-git/internal/codemcp"
 	"github.com/iamangus/opendev-git/internal/config"
 	githubclient "github.com/iamangus/opendev-git/internal/github"
+	"github.com/iamangus/opendev-git/internal/internalmcp"
 )
 
 // Orchestrator drives the issue lifecycle from investigation through execution.
 type Orchestrator struct {
-	config  *config.Config
-	github  *githubclient.Client
-	agent   *agent.Client
-	codemcp *codemcp.Client
+	config     *config.Config
+	github     *githubclient.Client
+	agent      *agent.Client
+	codemcp    *codemcp.Client
+	mcpManager *internalmcp.Manager
 }
 
 // New creates an Orchestrator. The GitHub client can be nil at construction time
 // and supplied per-event via WithGitHubClient.
-func New(cfg *config.Config, gh *githubclient.Client, a *agent.Client, cm *codemcp.Client) *Orchestrator {
+func New(cfg *config.Config, gh *githubclient.Client, a *agent.Client, cm *codemcp.Client, mgr *internalmcp.Manager) *Orchestrator {
 	return &Orchestrator{
-		config:  cfg,
-		github:  gh,
-		agent:   a,
-		codemcp: cm,
+		config:     cfg,
+		github:     gh,
+		agent:      a,
+		codemcp:    cm,
+		mcpManager: mgr,
 	}
 }
 

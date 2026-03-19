@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/go-github/v84/github"
 	"github.com/iamangus/opendev-git/internal/agent"
-	"github.com/iamangus/opendev-git/internal/internalmcp"
 	"github.com/iamangus/opendev-git/internal/mcpclient"
 )
 
@@ -44,17 +43,14 @@ func (o *Orchestrator) runPlanning(ctx context.Context, owner, repo string, issu
 		Transport: "streamable-http",
 	}}
 
-	// Start the ephemeral internal MCP server.
-	mcpSrv, err := internalmcp.New(owner, repo, number, o.github, o, o.agent, o.config.InternalMCPHost)
-	if err != nil {
-		return fmt.Errorf("start internal MCP server for planning: %w", err)
-	}
-	defer mcpSrv.Close()
+	// Start a session on the shared MCP manager.
+	sessionID, cleanup := o.mcpManager.CreateSession(owner, repo, number, o.github, o, o.agent)
+	defer cleanup()
 
 	allServers := append([]mcpclient.ServerConfig{
 		{
 			Name:      "ask_user",
-			URL:       mcpSrv.MCPEndpoint(),
+			URL:       o.mcpManager.MCPEndpoint(sessionID),
 			Transport: "streamable-http",
 		},
 	}, readMCP...)
@@ -69,7 +65,7 @@ func (o *Orchestrator) runPlanning(ctx context.Context, owner, repo string, issu
 		return fmt.Errorf("planning agent start run: %w", err)
 	}
 
-	mcpSrv.SetRunID(runID)
+	o.mcpManager.SetRunID(sessionID, runID)
 
 	resp, pollErr := o.agent.PollRun(ctx, runID)
 	if pollErr != nil {

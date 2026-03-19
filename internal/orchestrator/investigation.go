@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/go-github/v84/github"
 	"github.com/iamangus/opendev-git/internal/agent"
-	"github.com/iamangus/opendev-git/internal/internalmcp"
 	"github.com/iamangus/opendev-git/internal/mcpclient"
 )
 
@@ -92,18 +91,15 @@ func (o *Orchestrator) runInvestigation(ctx context.Context, owner, repo string,
 // The canceled run causes PollRun to return an error, which propagates cleanly
 // up to the caller.
 func (o *Orchestrator) runAgentLoop(ctx context.Context, agentName, initialContext string, history []agent.Message, owner, repo string, issueNumber int, mcpServers []mcpclient.ServerConfig) (findings, proposedTasks, risks string, err error) {
-	// 1. Start the ephemeral internal MCP server (run ID not yet known).
-	mcpSrv, err := internalmcp.New(owner, repo, issueNumber, o.github, o, o.agent, o.config.InternalMCPHost)
-	if err != nil {
-		return "", "", "", fmt.Errorf("start internal MCP server: %w", err)
-	}
-	defer mcpSrv.Close()
+	// 1. Create a session on the shared MCP manager (no new port opened).
+	sessionID, cleanup := o.mcpManager.CreateSession(owner, repo, issueNumber, o.github, o, o.agent)
+	defer cleanup()
 
 	// 2. Prepend ask_user to the MCP server list.
 	allServers := append([]mcpclient.ServerConfig{
 		{
 			Name:      "ask_user",
-			URL:       mcpSrv.MCPEndpoint(),
+			URL:       o.mcpManager.MCPEndpoint(sessionID),
 			Transport: "streamable-http",
 		},
 	}, mcpServers...)
@@ -119,8 +115,8 @@ func (o *Orchestrator) runAgentLoop(ctx context.Context, agentName, initialConte
 		return "", "", "", fmt.Errorf("agent start run: %w", err)
 	}
 
-	// 4. Tell the internal MCP server which run to cancel if ask_user is called.
-	mcpSrv.SetRunID(runID)
+	// 4. Tell the session which run to cancel if ask_user is called.
+	o.mcpManager.SetRunID(sessionID, runID)
 
 	// 5. Poll until the run reaches a terminal state.
 	resp, pollErr := o.agent.PollRun(ctx, runID)

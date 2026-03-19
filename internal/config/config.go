@@ -30,12 +30,13 @@ type Config struct {
 	AgentPlanning      string // AGENT_PLANNING      (default: "planning")
 	AgentExecution     string // AGENT_EXECUTION     (default: "execution")
 
-	// InternalMCPHost is the hostname or IP that opendev-agents should use to
-	// reach the ephemeral ask_user MCP server started by opendev-git. Defaults
-	// to 127.0.0.1, which only works when both services run on the same host.
-	// Set INTERNAL_MCP_HOST to the DNS name or IP of opendev-git when they run
-	// in separate containers (e.g. "opendev-git" in Docker Compose).
-	InternalMCPHost string // INTERNAL_MCP_HOST (default: "127.0.0.1")
+	// InternalMCPURL is the base URL that opendev-agents should use to reach
+	// the ask_user MCP endpoints hosted on opendev-git's own HTTP server.
+	// The path /{sessionID}/mcp is appended to form the full endpoint URL.
+	// Defaults to http://127.0.0.1:8080 for single-host setups. In production
+	// set INTERNAL_MCP_URL to the externally-reachable base URL of opendev-git
+	// (e.g. "https://opendev-git.srvd.dev") — no trailing slash.
+	InternalMCPURL string // INTERNAL_MCP_URL (default: "http://127.0.0.1:8080")
 }
 
 // Load reads configuration from environment variables.
@@ -82,7 +83,7 @@ func Load() (*Config, error) {
 	cfg.AgentInvestigation = getEnv("AGENT_INVESTIGATION", "investigation")
 	cfg.AgentPlanning = getEnv("AGENT_PLANNING", "planning")
 	cfg.AgentExecution = getEnv("AGENT_EXECUTION", "execution")
-	cfg.InternalMCPHost = stripScheme(getEnv("INTERNAL_MCP_HOST", "127.0.0.1"))
+	cfg.InternalMCPURL = strings.TrimRight(getEnv("INTERNAL_MCP_URL", "http://127.0.0.1:"+cfg.Port), "/")
 
 	toolBudgetStr := getEnv("TOOL_BUDGET", "20")
 	toolBudget, err := strconv.Atoi(toolBudgetStr)
@@ -99,13 +100,4 @@ func getEnv(key, defaultVal string) string {
 		return v
 	}
 	return defaultVal
-}
-
-// stripScheme removes a leading http:// or https:// scheme and any trailing
-// slashes from s, returning a bare host (or host:port). This makes
-// INTERNAL_MCP_HOST tolerant of values like "https://opendev-git.srvd.dev".
-func stripScheme(s string) string {
-	s = strings.TrimPrefix(s, "https://")
-	s = strings.TrimPrefix(s, "http://")
-	return strings.TrimRight(s, "/")
 }

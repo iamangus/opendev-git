@@ -11,6 +11,7 @@ import (
 	"github.com/iamangus/opendev-git/internal/codemcp"
 	"github.com/iamangus/opendev-git/internal/config"
 	githubclient "github.com/iamangus/opendev-git/internal/github"
+	"github.com/iamangus/opendev-git/internal/internalmcp"
 	"github.com/iamangus/opendev-git/internal/orchestrator"
 	"github.com/iamangus/opendev-git/internal/webhook"
 )
@@ -32,9 +33,11 @@ func main() {
 	agentClient := agent.NewClient(cfg.AgentServiceURL)
 	codeMCPClient := codemcp.NewClient(cfg.CodeMCPURL)
 
+	mcpManager := internalmcp.NewManager(cfg.InternalMCPURL)
+
 	// The orchestrator is initialized without a GitHub client; per-event goroutines
 	// create a client with the correct installation ID and call WithGitHubClient.
-	orch := orchestrator.New(cfg, nil, agentClient, codeMCPClient)
+	orch := orchestrator.New(cfg, nil, agentClient, codeMCPClient, mcpManager)
 
 	webhookHandler := webhook.NewHandler(cfg, orch)
 
@@ -43,6 +46,7 @@ func main() {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
+	mcpManager.Register(mux)
 
 	// Recover any in-flight issues that were left mid-workflow from a previous run.
 	if cfg.RepoOwner != "" && cfg.RepoName != "" {

@@ -1,31 +1,36 @@
-// Package internalmcp implements a minimal Streamable HTTP MCP server that
-// exposes the ask_user tool to agents running in opendev-agents.
+// Package internalmcp implements a session-based MCP handler hosted on
+// opendev-git's own HTTP server. This eliminates the need for ephemeral
+// listener ports and allows all MCP traffic to flow through the existing
+// reverse proxy on 443.
 //
-// When the agent calls ask_user, the handler:
+// Each agent run gets a unique session ID. The route /{sessionID}/mcp is
+// registered on the main ServeMux. When the agent calls ask_user, the handler:
 //  1. Posts the question as a GitHub issue comment
 //  2. Sets status:blocked on the issue
 //  3. Cancels the active agent run via the agent client
 //
 // Usage:
 //
-//	srv, err := internalmcp.New(owner, repo, issueNumber, gh, labeler, canceler, advertisedHost)
-//	// Start the agent run, passing srv.MCPEndpoint() in the MCP server list.
+//	mgr := internalmcp.NewManager(cfg.InternalMCPURL)
+//	mgr.Register(mux)                     // once at startup, on the main mux
+//
+//	sessionID, cleanup := mgr.CreateSession(owner, repo, number, gh, labeler, canceler)
+//	defer cleanup()
+//	endpoint := mgr.MCPEndpoint(sessionID) // pass to opendev-agents start-run request
 //	runID, err := agentClient.StartRun(...)
-//	srv.SetRunID(runID)
-//	resp, err := agentClient.PollRun(ctx, runID)
-//	srv.Close()
+//	mgr.SetRunID(sessionID, runID)         // link the canceler after run starts
 package internalmcp
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 )
 
 // GitHubPoster can post a comment on an issue.
@@ -35,7 +40,6 @@ type GitHubPoster interface {
 
 // StatusTransitioner can change the status label on an issue.
 type StatusTransitioner interface {
-	// TransitionStatus removes all status:* labels and adds the given one.
 	TransitionStatus(ctx context.Context, owner, repo string, number int, to string) error
 }
 
@@ -44,8 +48,8 @@ type RunCanceler interface {
 	Cancel(ctx context.Context, runID string) error
 }
 
-// Server is an ephemeral MCP server scoped to a single agent run.
-type Server struct {
+// session holds the per-run state for one active ask_user MCP session.
+type session struct {
 	owner       string
 	repo        string
 	issueNumber int
@@ -56,85 +60,108 @@ type Server struct {
 	gh       GitHubPoster
 	labeler  StatusTransitioner
 	canceler RunCanceler
-
-	httpServer *http.Server
-	addr       string // advertised base URL, e.g. "http://opendev-git:PORT"
 }
 
-// New creates and starts a new ephemeral MCP server. advertisedHost is the
-// hostname or IP that opendev-agents will use to reach this server — set it to
-// the externally-reachable address of this container (e.g. "opendev-git" when
-// running behind a Docker bridge network). Use "127.0.0.1" only in single-host
-// setups where both services share the same network namespace.
-//
-// The run ID can be set after the agent run is started via SetRunID.
-// Call Close() when done.
-func New(owner, repo string, issueNumber int, gh GitHubPoster, labeler StatusTransitioner, canceler RunCanceler, advertisedHost string) (*Server, error) {
-	// Bind to all interfaces so that requests arriving from other containers
-	// are accepted; the OS assigns an ephemeral port automatically.
-	ln, err := net.Listen("tcp", "0.0.0.0:0")
-	if err != nil {
-		return nil, fmt.Errorf("internalmcp: listen: %w", err)
-	}
+// Manager hosts MCP sessions on the main HTTP server, keyed by session ID.
+// Each session corresponds to one agent run. Register it once on startup;
+// create/destroy individual sessions per run.
+type Manager struct {
+	baseURL string // e.g. "https://opendev-git.srvd.dev" — no trailing slash
 
-	// Extract just the port from the listener address (format: "0.0.0.0:PORT").
-	_, port, err := net.SplitHostPort(ln.Addr().String())
-	if err != nil {
-		_ = ln.Close()
-		return nil, fmt.Errorf("internalmcp: parse listener addr: %w", err)
-	}
+	mu       sync.RWMutex
+	sessions map[string]*session
+}
 
-	s := &Server{
+// NewManager creates a Manager. baseURL is the externally-reachable base URL
+// of opendev-git (no trailing slash), e.g. "https://opendev-git.srvd.dev" or
+// "http://127.0.0.1:8080".
+func NewManager(baseURL string) *Manager {
+	return &Manager{
+		baseURL:  strings.TrimRight(baseURL, "/"),
+		sessions: make(map[string]*session),
+	}
+}
+
+// Register attaches the MCP route to mux. Call this once at startup with the
+// main ServeMux before the HTTP server starts listening.
+func (m *Manager) Register(mux *http.ServeMux) {
+	// Go 1.22+ pattern: method + path with wildcard.
+	mux.HandleFunc("POST /{sessionID}/mcp", m.handleMCP)
+}
+
+// CreateSession registers a new session and returns its ID and a cleanup func.
+// The cleanup func removes the session from the manager; always defer it.
+func (m *Manager) CreateSession(owner, repo string, issueNumber int, gh GitHubPoster, labeler StatusTransitioner, canceler RunCanceler) (sessionID string, cleanup func()) {
+	sessionID = newSessionID()
+	s := &session{
 		owner:       owner,
 		repo:        repo,
 		issueNumber: issueNumber,
 		gh:          gh,
 		labeler:     labeler,
 		canceler:    canceler,
-		addr:        "http://" + advertisedHost + ":" + port,
 	}
+	m.mu.Lock()
+	m.sessions[sessionID] = s
+	m.mu.Unlock()
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mcp", s.handleMCP)
-
-	s.httpServer = &http.Server{
-		Handler:      mux,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
+	cleanup = func() {
+		m.mu.Lock()
+		delete(m.sessions, sessionID)
+		m.mu.Unlock()
 	}
-
-	go func() {
-		if err := s.httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
-			log.Printf("internalmcp: server error: %v", err)
-		}
-	}()
-
-	return s, nil
+	return sessionID, cleanup
 }
 
-// SetRunID sets (or updates) the run ID that will be canceled when ask_user is called.
-// This must be called before the agent can actually invoke the ask_user tool.
-func (s *Server) SetRunID(runID string) {
+// SetRunID links a run ID to an existing session so that ask_user calls know
+// which run to cancel. Call this immediately after StartRun returns.
+func (m *Manager) SetRunID(sessionID, runID string) {
+	m.mu.RLock()
+	s := m.sessions[sessionID]
+	m.mu.RUnlock()
+	if s == nil {
+		return
+	}
 	s.mu.Lock()
 	s.runID = runID
 	s.mu.Unlock()
 }
 
-// URL returns the base URL of the MCP server (e.g. "http://127.0.0.1:PORT").
-func (s *Server) URL() string {
-	return s.addr
+// MCPEndpoint returns the full URL that opendev-agents should POST to for this
+// session, e.g. "https://opendev-git.srvd.dev/abc123/mcp".
+func (m *Manager) MCPEndpoint(sessionID string) string {
+	return m.baseURL + "/" + sessionID + "/mcp"
 }
 
-// MCPEndpoint returns the full URL of the MCP endpoint.
-func (s *Server) MCPEndpoint() string {
-	return s.addr + "/mcp"
-}
+// handleMCP dispatches an incoming JSON-RPC request to the correct session.
+func (m *Manager) handleMCP(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("sessionID")
 
-// Close shuts down the server.
-func (s *Server) Close() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = s.httpServer.Shutdown(ctx)
+	m.mu.RLock()
+	s := m.sessions[sessionID]
+	m.mu.RUnlock()
+
+	if s == nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	var req jsonrpcRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONRPCError(w, nil, -32700, "parse error: "+err.Error())
+		return
+	}
+
+	switch req.Method {
+	case "initialize":
+		handleInitialize(w, req)
+	case "tools/list":
+		handleToolsList(w, req)
+	case "tools/call":
+		s.handleToolsCall(w, r.Context(), req)
+	default:
+		writeJSONRPCError(w, req.ID, -32601, "method not found: "+req.Method)
+	}
 }
 
 // --- JSON-RPC types ---
@@ -158,32 +185,7 @@ type jsonrpcError struct {
 	Message string `json:"message"`
 }
 
-// handleMCP handles all JSON-RPC messages sent to /mcp.
-func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var req jsonrpcRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONRPCError(w, nil, -32700, "parse error: "+err.Error())
-		return
-	}
-
-	switch req.Method {
-	case "initialize":
-		s.handleInitialize(w, req)
-	case "tools/list":
-		s.handleToolsList(w, req)
-	case "tools/call":
-		s.handleToolsCall(w, r.Context(), req)
-	default:
-		writeJSONRPCError(w, req.ID, -32601, "method not found: "+req.Method)
-	}
-}
-
-func (s *Server) handleInitialize(w http.ResponseWriter, req jsonrpcRequest) {
+func handleInitialize(w http.ResponseWriter, req jsonrpcRequest) {
 	result := map[string]any{
 		"protocolVersion": "2024-11-05",
 		"capabilities": map[string]any{
@@ -197,7 +199,7 @@ func (s *Server) handleInitialize(w http.ResponseWriter, req jsonrpcRequest) {
 	writeJSONRPCResult(w, req.ID, result)
 }
 
-func (s *Server) handleToolsList(w http.ResponseWriter, req jsonrpcRequest) {
+func handleToolsList(w http.ResponseWriter, req jsonrpcRequest) {
 	tools := []map[string]any{
 		{
 			"name":        "ask_user",
@@ -226,7 +228,7 @@ type askUserArgs struct {
 	Question string `json:"question"`
 }
 
-func (s *Server) handleToolsCall(w http.ResponseWriter, ctx context.Context, req jsonrpcRequest) {
+func (s *session) handleToolsCall(w http.ResponseWriter, ctx context.Context, req jsonrpcRequest) {
 	var params toolCallParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		writeJSONRPCError(w, req.ID, -32602, "invalid params: "+err.Error())
@@ -269,8 +271,7 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, ctx context.Context, req
 		log.Printf("internalmcp: transition to blocked: %v", err)
 	}
 
-	// Cancel the agent run. This will cause PollRun in the orchestrator to
-	// return an error, which propagates up and stops the workflow cleanly.
+	// Cancel the agent run.
 	if runID != "" {
 		if err := s.canceler.Cancel(ctx, runID); err != nil {
 			log.Printf("internalmcp: cancel run %s: %v", runID, err)
@@ -279,8 +280,6 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, ctx context.Context, req
 		log.Printf("internalmcp: ask_user called but run ID not yet set")
 	}
 
-	// Return a success response to the MCP call so the agent receives an
-	// acknowledgement before its context is torn down.
 	writeJSONRPCResult(w, req.ID, map[string]any{
 		"content": []map[string]any{
 			{"type": "text", "text": "Question posted. Run will be paused until the user replies."},
@@ -289,23 +288,21 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, ctx context.Context, req
 }
 
 func writeJSONRPCResult(w http.ResponseWriter, id any, result any) {
-	resp := jsonrpcResponse{
-		JSONRPC: "2.0",
-		ID:      id,
-		Result:  result,
-	}
+	resp := jsonrpcResponse{JSONRPC: "2.0", ID: id, Result: result}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func writeJSONRPCError(w http.ResponseWriter, id any, code int, message string) {
-	resp := jsonrpcResponse{
-		JSONRPC: "2.0",
-		ID:      id,
-		Error:   &jsonrpcError{Code: code, Message: message},
-	}
+	resp := jsonrpcResponse{JSONRPC: "2.0", ID: id, Error: &jsonrpcError{Code: code, Message: message}}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK) // JSON-RPC errors still use 200
+	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func newSessionID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }

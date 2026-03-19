@@ -93,7 +93,7 @@ func (o *Orchestrator) runInvestigation(ctx context.Context, owner, repo string,
 // up to the caller.
 func (o *Orchestrator) runAgentLoop(ctx context.Context, agentName, initialContext string, history []agent.Message, owner, repo string, issueNumber int, mcpServers []mcpclient.ServerConfig) (findings, proposedTasks, risks string, err error) {
 	// 1. Start the ephemeral internal MCP server (run ID not yet known).
-	mcpSrv, err := internalmcp.New(owner, repo, issueNumber, o.github, o, o.agent)
+	mcpSrv, err := internalmcp.New(owner, repo, issueNumber, o.github, o, o.agent, o.config.InternalMCPHost)
 	if err != nil {
 		return "", "", "", fmt.Errorf("start internal MCP server: %w", err)
 	}

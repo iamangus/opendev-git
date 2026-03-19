@@ -45,7 +45,7 @@ func (o *Orchestrator) runPlanning(ctx context.Context, owner, repo string, issu
 	}}
 
 	// Start the ephemeral internal MCP server.
-	mcpSrv, err := internalmcp.New(owner, repo, number, o.github, o, o.agent)
+	mcpSrv, err := internalmcp.New(owner, repo, number, o.github, o, o.agent, o.config.InternalMCPHost)
 	if err != nil {
 		return fmt.Errorf("start internal MCP server for planning: %w", err)
 	}

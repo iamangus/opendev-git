@@ -28,6 +28,13 @@ type Config struct {
 	AgentInvestigation string // AGENT_INVESTIGATION (default: "investigation")
 	AgentPlanning      string // AGENT_PLANNING      (default: "planning")
 	AgentExecution     string // AGENT_EXECUTION     (default: "execution")
+
+	// InternalMCPHost is the hostname or IP that opendev-agents should use to
+	// reach the ephemeral ask_user MCP server started by opendev-git. Defaults
+	// to 127.0.0.1, which only works when both services run on the same host.
+	// Set INTERNAL_MCP_HOST to the DNS name or IP of opendev-git when they run
+	// in separate containers (e.g. "opendev-git" in Docker Compose).
+	InternalMCPHost string // INTERNAL_MCP_HOST (default: "127.0.0.1")
 }
 
 // Load reads configuration from environment variables.
@@ -74,6 +81,7 @@ func Load() (*Config, error) {
 	cfg.AgentInvestigation = getEnv("AGENT_INVESTIGATION", "investigation")
 	cfg.AgentPlanning = getEnv("AGENT_PLANNING", "planning")
 	cfg.AgentExecution = getEnv("AGENT_EXECUTION", "execution")
+	cfg.InternalMCPHost = getEnv("INTERNAL_MCP_HOST", "127.0.0.1")
 
 	toolBudgetStr := getEnv("TOOL_BUDGET", "20")
 	toolBudget, err := strconv.Atoi(toolBudgetStr)

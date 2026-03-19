@@ -8,7 +8,7 @@
 //
 // Usage:
 //
-//	srv, err := internalmcp.New(owner, repo, issueNumber, gh, labeler, canceler)
+//	srv, err := internalmcp.New(owner, repo, issueNumber, gh, labeler, canceler, advertisedHost)
 //	// Start the agent run, passing srv.MCPEndpoint() in the MCP server list.
 //	runID, err := agentClient.StartRun(...)
 //	srv.SetRunID(runID)
@@ -58,15 +58,30 @@ type Server struct {
 	canceler RunCanceler
 
 	httpServer *http.Server
-	addr       string // e.g. "http://127.0.0.1:PORT"
+	addr       string // advertised base URL, e.g. "http://opendev-git:PORT"
 }
 
-// New creates and starts a new ephemeral MCP server. The run ID can be set
-// after the agent run is started via SetRunID. Call Close() when done.
-func New(owner, repo string, issueNumber int, gh GitHubPoster, labeler StatusTransitioner, canceler RunCanceler) (*Server, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+// New creates and starts a new ephemeral MCP server. advertisedHost is the
+// hostname or IP that opendev-agents will use to reach this server — set it to
+// the externally-reachable address of this container (e.g. "opendev-git" when
+// running behind a Docker bridge network). Use "127.0.0.1" only in single-host
+// setups where both services share the same network namespace.
+//
+// The run ID can be set after the agent run is started via SetRunID.
+// Call Close() when done.
+func New(owner, repo string, issueNumber int, gh GitHubPoster, labeler StatusTransitioner, canceler RunCanceler, advertisedHost string) (*Server, error) {
+	// Bind to all interfaces so that requests arriving from other containers
+	// are accepted; the OS assigns an ephemeral port automatically.
+	ln, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
 		return nil, fmt.Errorf("internalmcp: listen: %w", err)
+	}
+
+	// Extract just the port from the listener address (format: "0.0.0.0:PORT").
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		_ = ln.Close()
+		return nil, fmt.Errorf("internalmcp: parse listener addr: %w", err)
 	}
 
 	s := &Server{
@@ -76,7 +91,7 @@ func New(owner, repo string, issueNumber int, gh GitHubPoster, labeler StatusTra
 		gh:          gh,
 		labeler:     labeler,
 		canceler:    canceler,
-		addr:        "http://" + ln.Addr().String(),
+		addr:        "http://" + advertisedHost + ":" + port,
 	}
 
 	mux := http.NewServeMux()

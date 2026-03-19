@@ -86,31 +86,6 @@ func TestServeHTTPInvalidSignature(t *testing.T) {
 	}
 }
 
-func TestIssueHasDesignatedLabel(t *testing.T) {
-	h := newTestHandler("")
-	labelName := "opendev-git"
-	issue := &github.Issue{
-		Labels: []*github.Label{
-			{Name: github.Ptr(labelName)},
-		},
-	}
-	if !h.issueHasDesignatedLabel(issue) {
-		t.Error("expected issue to have designated label")
-	}
-}
-
-func TestIssueHasDesignatedLabelMissing(t *testing.T) {
-	h := newTestHandler("")
-	issue := &github.Issue{
-		Labels: []*github.Label{
-			{Name: github.Ptr("bug")},
-		},
-	}
-	if h.issueHasDesignatedLabel(issue) {
-		t.Error("expected issue NOT to have designated label")
-	}
-}
-
 func TestIssuePayloadParsing(t *testing.T) {
 	payload := issuesPayload{
 		Action: "labeled",

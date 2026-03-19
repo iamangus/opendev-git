@@ -113,24 +113,24 @@ func (h *Handler) handleIssuesEvent(body []byte) {
 
 	log.Printf("webhook: received issues event action=%q issue=#%d", payload.Action, payload.Issue.GetNumber())
 
-	switch payload.Action {
-	case "opened":
-		// A new issue was opened — only proceed if it already has the trigger label.
-		if !h.issueHasDesignatedLabel(payload.Issue) {
-			log.Printf("webhook: issues#opened #%d — no designated label, ignoring", payload.Issue.GetNumber())
-			return
-		}
-	case "labeled":
-		// A label was added — only proceed if the label being added IS the trigger label.
-		// This prevents the status:* label transitions we make ourselves from re-triggering
-		// the workflow (the feedback loop bug).
-		addedLabel := payload.Label.GetName()
-		if addedLabel != h.config.DesignatedLabel {
-			log.Printf("webhook: issues#labeled #%d — added label %q is not the designated trigger label, ignoring",
-				payload.Issue.GetNumber(), addedLabel)
-			return
-		}
-	default:
+	// Only act on "labeled" events. GitHub fires a "labeled" event for every
+	// label added to an issue — including labels applied at creation time — so
+	// this single case handles both "new issue with trigger label" and
+	// "trigger label added to existing issue". Listening to "opened" as well
+	// would cause a duplicate run whenever a new issue is created with the
+	// trigger label already attached.
+	if payload.Action != "labeled" {
+		log.Printf("webhook: issues action=%q — ignoring (only 'labeled' is handled)", payload.Action)
+		return
+	}
+
+	// Only proceed if the label being added IS the designated trigger label.
+	// This prevents status:* transitions we make ourselves from re-triggering
+	// the workflow (the feedback loop bug).
+	addedLabel := payload.Label.GetName()
+	if addedLabel != h.config.DesignatedLabel {
+		log.Printf("webhook: issues#labeled #%d — added label %q is not the designated trigger label, ignoring",
+			payload.Issue.GetNumber(), addedLabel)
 		return
 	}
 
@@ -221,16 +221,6 @@ func (h *Handler) handleIssueCommentEvent(body []byte) {
 			log.Printf("webhook: HandleMention #%d: %v", issue.GetNumber(), err)
 		}
 	}()
-}
-
-// issueHasDesignatedLabel returns true if the issue has the designated trigger label.
-func (h *Handler) issueHasDesignatedLabel(issue *github.Issue) bool {
-	for _, l := range issue.Labels {
-		if l.GetName() == h.config.DesignatedLabel {
-			return true
-		}
-	}
-	return false
 }
 
 // verifySignature checks the X-Hub-Signature-256 header using HMAC-SHA256.

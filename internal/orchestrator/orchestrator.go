@@ -75,6 +75,12 @@ func (o *Orchestrator) HandleMention(ctx context.Context, owner, repo string, is
 	return o.runPlanning(ctx, owner, repo, issue, investigationComment, defaultBranch)
 }
 
+// TransitionStatus is the public interface for changing issue status labels.
+// It satisfies internalmcp.StatusTransitioner.
+func (o *Orchestrator) TransitionStatus(ctx context.Context, owner, repo string, number int, to string) error {
+	return o.transitionStatus(ctx, owner, repo, number, "", to)
+}
+
 // transitionStatus removes the old status label and adds the new one.
 func (o *Orchestrator) transitionStatus(ctx context.Context, owner, repo string, number int, from, to string) error {
 	statusLabels := []string{

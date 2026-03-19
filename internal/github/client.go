@@ -204,6 +204,33 @@ func (c *Client) UpdateComment(ctx context.Context, owner, repo string, commentI
 	return nil
 }
 
+// ListOpenIssuesByLabel returns all open issues that have the given label.
+func (c *Client) ListOpenIssuesByLabel(ctx context.Context, owner, repo, label string) ([]*github.Issue, error) {
+	opts := &github.IssueListByRepoOptions{
+		State:       "open",
+		Labels:      []string{label},
+		ListOptions: github.ListOptions{PerPage: 100},
+	}
+	var all []*github.Issue
+	for {
+		issues, resp, err := c.gh.Issues.ListByRepo(ctx, owner, repo, opts)
+		if err != nil {
+			return nil, fmt.Errorf("list issues with label %q: %w", label, err)
+		}
+		// ListByRepo also returns pull requests; filter them out.
+		for _, issue := range issues {
+			if issue.PullRequestLinks == nil {
+				all = append(all, issue)
+			}
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.ListOptions.Page = resp.NextPage
+	}
+	return all, nil
+}
+
 // GetFileSHA returns the blob SHA of a file on the given branch, or "" if not found.
 func (c *Client) GetFileSHA(ctx context.Context, owner, repo, path, branch string) (string, error) {
 	opts := &github.RepositoryContentGetOptions{Ref: branch}

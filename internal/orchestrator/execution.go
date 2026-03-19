@@ -183,10 +183,7 @@ func (o *Orchestrator) generateCode(ctx context.Context, issue *github.Issue, br
 		return fmt.Errorf("agent execution send: %w", err)
 	}
 
-	if !resp.Done {
-		log.Printf("orchestrator: execution agent did not signal done for task %q (attempt %d)", task, attempt)
-	}
-
+	log.Printf("orchestrator: execution agent completed for task %q (attempt %d), response length=%d", task, attempt, len(resp.Text))
 	return nil
 }
 

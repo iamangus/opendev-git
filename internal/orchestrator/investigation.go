@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/go-github/v84/github"
 	"github.com/iamangus/opendev-git/internal/agent"
+	"github.com/iamangus/opendev-git/internal/internalmcp"
 	"github.com/iamangus/opendev-git/internal/mcpclient"
 )
 
@@ -16,9 +17,9 @@ import (
 // Steps:
 //  1. Set status:investigating
 //  2. Determine the default branch and set up code-mcp repo/worktree for read access
-//  3. Build initial context from issue title + body
-//  4. Loop: send to agent (with read MCP) until done:true or budget exceeded
-//     - If agent asks a question (not done) → post comment, set status:blocked
+//  3. Build context from issue title, body, and prior comment history
+//  4. Send to agent (with read MCP); agent runs until completion or is canceled
+//     via ask_user (which posts a question, sets status:blocked, and cancels the run)
 //  5. Post "## Investigation Complete" comment
 //  6. Transition to planning phase
 func (o *Orchestrator) runInvestigation(ctx context.Context, owner, repo string, issue *github.Issue) error {
@@ -50,6 +51,13 @@ func (o *Orchestrator) runInvestigation(ctx context.Context, owner, repo string,
 		Transport: "streamable-http",
 	}}
 
+	// Fetch all comments so we can reconstruct conversation history on resumption.
+	comments, err := o.github.GetComments(ctx, owner, repo, number)
+	if err != nil {
+		return fmt.Errorf("get issue comments: %w", err)
+	}
+	history := buildCommentHistory(comments)
+
 	// Build initial context.
 	issueContext := buildIssueContext(issue)
 	agentCtx := fmt.Sprintf(
@@ -57,7 +65,7 @@ func (o *Orchestrator) runInvestigation(ctx context.Context, owner, repo string,
 		issueContext,
 	)
 
-	findings, proposedTasks, risks, err := o.runAgentLoop(ctx, "investigation", agentCtx, owner, repo, number, readMCP)
+	findings, proposedTasks, risks, err := o.runAgentLoop(ctx, "investigation", agentCtx, history, owner, repo, number, readMCP)
 	if err != nil {
 		return err
 	}
@@ -72,48 +80,58 @@ func (o *Orchestrator) runInvestigation(ctx context.Context, owner, repo string,
 	return o.runPlanning(ctx, owner, repo, issue, investigationBody, defaultBranch)
 }
 
-// runAgentLoop sends messages to the agent in a loop until the agent signals
-// done:true or the tool budget is exhausted. Returns parsed findings/tasks/risks.
-// mcpServers is forwarded to every agent.Request so the agent can use MCP tools.
-func (o *Orchestrator) runAgentLoop(ctx context.Context, phase, initialContext, owner, repo string, issueNumber int, mcpServers []mcpclient.ServerConfig) (findings, proposedTasks, risks string, err error) {
-	agentCtx := initialContext
-	budget := o.config.ToolBudget
+// runAgentLoop starts an ephemeral internal MCP server exposing ask_user,
+// submits an agent run with both the code MCP server(s) and ask_user,
+// sets the run ID on the internal MCP server, then polls for completion.
+//
+// If the agent calls ask_user, the internal MCP handler:
+//   - posts the question to the GitHub issue
+//   - sets status:blocked
+//   - cancels the run via the agent client
+//
+// The canceled run causes PollRun to return an error, which propagates cleanly
+// up to the caller.
+func (o *Orchestrator) runAgentLoop(ctx context.Context, phase, initialContext string, history []agent.Message, owner, repo string, issueNumber int, mcpServers []mcpclient.ServerConfig) (findings, proposedTasks, risks string, err error) {
+	// 1. Start the ephemeral internal MCP server (run ID not yet known).
+	mcpSrv, err := internalmcp.New(owner, repo, issueNumber, o.github, o, o.agent)
+	if err != nil {
+		return "", "", "", fmt.Errorf("start internal MCP server: %w", err)
+	}
+	defer mcpSrv.Close()
 
-	for i := 0; i <= budget; i++ {
-		resp, sendErr := o.agent.Send(ctx, agent.Request{
-			Phase:      phase,
-			Context:    agentCtx,
-			MCPServers: mcpServers,
-		})
-		if sendErr != nil {
-			return "", "", "", fmt.Errorf("agent send: %w", sendErr)
-		}
+	// 2. Prepend ask_user to the MCP server list.
+	allServers := append([]mcpclient.ServerConfig{
+		{
+			Name:      "ask_user",
+			URL:       mcpSrv.MCPEndpoint(),
+			Transport: "streamable-http",
+		},
+	}, mcpServers...)
 
-		log.Printf("orchestrator: agent phase=%s done=%v", phase, resp.Done)
-
-		if resp.Done {
-			// Agent finished — parse its final text for structured output.
-			findings, proposedTasks, risks = parseInvestigationResponse(resp.Text)
-			return findings, proposedTasks, risks, nil
-		}
-
-		// Agent returned text with done=false → it's asking a question.
-		blockedMsg := fmt.Sprintf(
-			"I need some clarification before I can proceed:\n\n%s\n\n"+
-				"Please reply mentioning @opendev-git to continue.",
-			resp.Text,
-		)
-		if postErr := o.github.PostComment(ctx, owner, repo, issueNumber, blockedMsg); postErr != nil {
-			log.Printf("orchestrator: post blocked comment: %v", postErr)
-		}
-		if transErr := o.transitionStatus(ctx, owner, repo, issueNumber, "", "status:blocked"); transErr != nil {
-			log.Printf("orchestrator: transition to blocked: %v", transErr)
-		}
-		return "", "", "", fmt.Errorf("agent blocked waiting for user input")
+	// 3. Start the run — get the run ID immediately.
+	runID, err := o.agent.StartRun(ctx, agent.Request{
+		Phase:      phase,
+		Context:    initialContext,
+		History:    history,
+		MCPServers: allServers,
+	})
+	if err != nil {
+		return "", "", "", fmt.Errorf("agent start run: %w", err)
 	}
 
-	// Budget exhausted — use whatever was last parsed.
-	log.Printf("orchestrator: tool budget exhausted for issue #%d", issueNumber)
+	// 4. Tell the internal MCP server which run to cancel if ask_user is called.
+	mcpSrv.SetRunID(runID)
+
+	// 5. Poll until the run reaches a terminal state.
+	resp, pollErr := o.agent.PollRun(ctx, runID)
+	if pollErr != nil {
+		// Canceled runs mean ask_user was called — status:blocked already set.
+		return "", "", "", fmt.Errorf("agent send: %w", pollErr)
+	}
+
+	log.Printf("orchestrator: agent phase=%s completed", phase)
+
+	findings, proposedTasks, risks = parseInvestigationResponse(resp.Text)
 	return findings, proposedTasks, risks, nil
 }
 
@@ -124,6 +142,29 @@ func buildIssueContext(issue *github.Issue) string {
 		issue.GetTitle(),
 		issue.GetBody(),
 	)
+}
+
+// buildCommentHistory converts GitHub issue comments into agent.Message history
+// so that the agent has full conversational context when a run is resumed.
+//
+// Comments posted by GitHub Apps (bot accounts, identified by ending in "[bot]")
+// are treated as assistant messages; all others are treated as user messages.
+func buildCommentHistory(comments []*github.IssueComment) []agent.Message {
+	if len(comments) == 0 {
+		return nil
+	}
+	msgs := make([]agent.Message, 0, len(comments))
+	for _, c := range comments {
+		role := "user"
+		if login := c.GetUser().GetLogin(); strings.HasSuffix(login, "[bot]") {
+			role = "assistant"
+		}
+		msgs = append(msgs, agent.Message{
+			Role:    role,
+			Content: c.GetBody(),
+		})
+	}
+	return msgs
 }
 
 // buildInvestigationComment formats the investigation results as a GitHub comment.

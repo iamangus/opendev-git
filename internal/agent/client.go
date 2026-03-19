@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"time"
 
@@ -95,6 +96,7 @@ func (c *Client) PollRun(ctx context.Context, runID string) (*Response, error) {
 // Cancel requests that the given run be terminated immediately.
 // It is a best-effort call; errors are logged by the caller.
 func (c *Client) Cancel(ctx context.Context, runID string) error {
+	log.Printf("agent: canceling run %q", runID)
 	url := c.baseURL + "/api/v1/runs/" + runID + "/cancel"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
@@ -115,6 +117,7 @@ func (c *Client) Cancel(ctx context.Context, runID string) error {
 
 // startRun calls POST /api/v1/agents/{name}/run and returns the run ID.
 func (c *Client) startRun(ctx context.Context, req Request) (string, error) {
+	log.Printf("agent: starting run agent=%q", req.AgentName)
 	body, err := json.Marshal(wireRunRequest{
 		Message:    req.Context,
 		History:    req.History,
@@ -153,6 +156,7 @@ func (c *Client) startRun(ctx context.Context, req Request) (string, error) {
 	if wire.RunID == "" {
 		return "", fmt.Errorf("agent service returned empty run_id")
 	}
+	log.Printf("agent: run started runID=%q agent=%q", wire.RunID, req.AgentName)
 	return wire.RunID, nil
 }
 
@@ -196,10 +200,13 @@ func (c *Client) pollRun(ctx context.Context, runID string) (*Response, error) {
 
 		switch status.Status {
 		case "completed":
+			log.Printf("agent: run %q completed", runID)
 			return &Response{Text: status.Response}, nil
 		case "failed":
+			log.Printf("agent: run %q failed: %s", runID, status.Error)
 			return nil, fmt.Errorf("agent run %s failed: %s", runID, status.Error)
 		case "canceled":
+			log.Printf("agent: run %q was canceled", runID)
 			return nil, fmt.Errorf("agent run %s was canceled", runID)
 		}
 		// queued or running — keep polling

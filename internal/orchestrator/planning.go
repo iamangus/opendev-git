@@ -18,6 +18,7 @@ import (
 //  3. If the run is canceled (ask_user) → status:blocked was already set by the MCP handler
 func (o *Orchestrator) runPlanning(ctx context.Context, owner, repo string, issue *github.Issue, investigationComment, defaultBranch string) error {
 	number := issue.GetNumber()
+	log.Printf("orchestrator: starting planning for #%d (%s/%s)", number, owner, repo)
 
 	// Fetch comment history so the agent can see prior conversation on resumption.
 	comments, err := o.github.GetComments(ctx, owner, repo, number)
@@ -64,16 +65,18 @@ func (o *Orchestrator) runPlanning(ctx context.Context, owner, repo string, issu
 	if err != nil {
 		return fmt.Errorf("planning agent start run: %w", err)
 	}
+	log.Printf("orchestrator: planning agent run started runID=%q issue=#%d", runID, number)
 
 	o.mcpManager.SetRunID(sessionID, runID)
 
 	resp, pollErr := o.agent.PollRun(ctx, runID)
 	if pollErr != nil {
 		// Canceled runs mean ask_user was called — status:blocked already set.
+		log.Printf("orchestrator: planning agent run %q ended with error: %v", runID, pollErr)
 		return fmt.Errorf("planning agent send: %w", pollErr)
 	}
 
-	log.Printf("orchestrator: planning phase completed, response length=%d", len(resp.Text))
+	log.Printf("orchestrator: planning phase completed for #%d, response length=%d", number, len(resp.Text))
 
 	if err := o.transitionStatus(ctx, owner, repo, number, "", "status:approved"); err != nil {
 		return fmt.Errorf("set approved status: %w", err)

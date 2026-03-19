@@ -23,6 +23,7 @@ import (
 //  6. Transition to planning phase
 func (o *Orchestrator) runInvestigation(ctx context.Context, owner, repo string, issue *github.Issue) error {
 	number := issue.GetNumber()
+	log.Printf("orchestrator: starting investigation for #%d (%s/%s)", number, owner, repo)
 
 	if err := o.transitionStatus(ctx, owner, repo, number, "", "status:investigating"); err != nil {
 		return fmt.Errorf("set investigating status: %w", err)
@@ -71,6 +72,7 @@ func (o *Orchestrator) runInvestigation(ctx context.Context, owner, repo string,
 
 	// Build and post investigation comment.
 	investigationBody := buildInvestigationComment(findings, proposedTasks, risks)
+	log.Printf("orchestrator: investigation complete for #%d, posting comment", number)
 	if err := o.github.PostComment(ctx, owner, repo, number, investigationBody); err != nil {
 		return fmt.Errorf("post investigation comment: %w", err)
 	}
@@ -91,6 +93,8 @@ func (o *Orchestrator) runInvestigation(ctx context.Context, owner, repo string,
 // The canceled run causes PollRun to return an error, which propagates cleanly
 // up to the caller.
 func (o *Orchestrator) runAgentLoop(ctx context.Context, agentName, initialContext string, history []agent.Message, owner, repo string, issueNumber int, mcpServers []mcpclient.ServerConfig) (findings, proposedTasks, risks string, err error) {
+	log.Printf("orchestrator: runAgentLoop agent=%q issue=#%d (%s/%s)", agentName, issueNumber, owner, repo)
+
 	// 1. Create a session on the shared MCP manager (no new port opened).
 	sessionID, cleanup := o.mcpManager.CreateSession(owner, repo, issueNumber, o.github, o, o.agent)
 	defer cleanup()
@@ -114,6 +118,7 @@ func (o *Orchestrator) runAgentLoop(ctx context.Context, agentName, initialConte
 	if err != nil {
 		return "", "", "", fmt.Errorf("agent start run: %w", err)
 	}
+	log.Printf("orchestrator: agent run started runID=%q agent=%q issue=#%d", runID, agentName, issueNumber)
 
 	// 4. Tell the session which run to cancel if ask_user is called.
 	o.mcpManager.SetRunID(sessionID, runID)
@@ -122,6 +127,7 @@ func (o *Orchestrator) runAgentLoop(ctx context.Context, agentName, initialConte
 	resp, pollErr := o.agent.PollRun(ctx, runID)
 	if pollErr != nil {
 		// Canceled runs mean ask_user was called — status:blocked already set.
+		log.Printf("orchestrator: agent run %q ended with error: %v", runID, pollErr)
 		return "", "", "", fmt.Errorf("agent send: %w", pollErr)
 	}
 

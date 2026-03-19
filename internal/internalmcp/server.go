@@ -105,10 +105,13 @@ func (m *Manager) CreateSession(owner, repo string, issueNumber int, gh GitHubPo
 	m.sessions[sessionID] = s
 	m.mu.Unlock()
 
+	log.Printf("internalmcp: session created id=%q issue=%s/%s#%d", sessionID, owner, repo, issueNumber)
+
 	cleanup = func() {
 		m.mu.Lock()
 		delete(m.sessions, sessionID)
 		m.mu.Unlock()
+		log.Printf("internalmcp: session cleaned up id=%q", sessionID)
 	}
 	return sessionID, cleanup
 }
@@ -125,6 +128,7 @@ func (m *Manager) SetRunID(sessionID, runID string) {
 	s.mu.Lock()
 	s.runID = runID
 	s.mu.Unlock()
+	log.Printf("internalmcp: session %q linked to run %q", sessionID, runID)
 }
 
 // MCPEndpoint returns the full URL that opendev-agents should POST to for this
@@ -136,6 +140,7 @@ func (m *Manager) MCPEndpoint(sessionID string) string {
 // handleMCP dispatches an incoming JSON-RPC request to the correct session.
 func (m *Manager) handleMCP(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("sessionID")
+	log.Printf("internalmcp: incoming request sessionID=%q method=POST", sessionID)
 
 	m.mu.RLock()
 	s := m.sessions[sessionID]
@@ -154,12 +159,16 @@ func (m *Manager) handleMCP(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Method {
 	case "initialize":
+		log.Printf("internalmcp: session %q — initialize", sessionID)
 		handleInitialize(w, req)
 	case "tools/list":
+		log.Printf("internalmcp: session %q — tools/list", sessionID)
 		handleToolsList(w, req)
 	case "tools/call":
+		log.Printf("internalmcp: session %q — tools/call", sessionID)
 		s.handleToolsCall(w, r.Context(), req)
 	default:
+		log.Printf("internalmcp: session %q — unknown method %q", sessionID, req.Method)
 		writeJSONRPCError(w, req.ID, -32601, "method not found: "+req.Method)
 	}
 }
@@ -255,6 +264,9 @@ func (s *session) handleToolsCall(w http.ResponseWriter, ctx context.Context, re
 	s.mu.RLock()
 	runID := s.runID
 	s.mu.RUnlock()
+
+	log.Printf("internalmcp: ask_user called for %s/%s#%d runID=%q question=%q",
+		s.owner, s.repo, s.issueNumber, runID, question)
 
 	// Post question to GitHub.
 	comment := fmt.Sprintf(

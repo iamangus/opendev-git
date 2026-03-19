@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"github.com/google/go-github/v84/github"
 	"github.com/iamangus/opendev-git/internal/agent"
@@ -43,6 +44,7 @@ func (o *Orchestrator) WithGitHubClient(gh *githubclient.Client) *Orchestrator {
 
 // HandleIssue begins the investigation → planning → execution workflow for a new issue.
 func (o *Orchestrator) HandleIssue(ctx context.Context, owner, repo string, issue *github.Issue) error {
+	log.Printf("orchestrator: HandleIssue #%d (%s/%s)", issue.GetNumber(), owner, repo)
 	if err := o.runInvestigation(ctx, owner, repo, issue); err != nil {
 		return err
 	}
@@ -51,6 +53,7 @@ func (o *Orchestrator) HandleIssue(ctx context.Context, owner, repo string, issu
 
 // HandleMention resumes a blocked workflow when @opendev-git is mentioned in a comment.
 func (o *Orchestrator) HandleMention(ctx context.Context, owner, repo string, issue *github.Issue, comment *github.IssueComment) error {
+	log.Printf("orchestrator: HandleMention #%d (%s/%s) — comment by %q", issue.GetNumber(), owner, repo, comment.GetUser().GetLogin())
 	// Find the investigation comment to resume planning/execution.
 	comments, err := o.github.GetComments(ctx, owner, repo, issue.GetNumber())
 	if err != nil {
@@ -60,6 +63,7 @@ func (o *Orchestrator) HandleMention(ctx context.Context, owner, repo string, is
 	investigationComment := findInvestigationComment(comments)
 	if investigationComment == "" {
 		// No investigation yet — run it.
+		log.Printf("orchestrator: HandleMention #%d — no investigation comment found, starting investigation", issue.GetNumber())
 		return o.runInvestigation(ctx, owner, repo, issue)
 	}
 
@@ -71,21 +75,25 @@ func (o *Orchestrator) HandleMention(ctx context.Context, owner, repo string, is
 
 	// Check current status from labels.
 	if issueHasLabel(issue, "status:planned") || issueHasLabel(issue, "status:approved") {
+		log.Printf("orchestrator: HandleMention #%d — issue is planned/approved, resuming execution", issue.GetNumber())
 		return o.runExecution(ctx, owner, repo, issue, investigationComment, defaultBranch)
 	}
 
 	// Default: re-run planning.
+	log.Printf("orchestrator: HandleMention #%d — resuming planning phase", issue.GetNumber())
 	return o.runPlanning(ctx, owner, repo, issue, investigationComment, defaultBranch)
 }
 
 // TransitionStatus is the public interface for changing issue status labels.
 // It satisfies internalmcp.StatusTransitioner.
 func (o *Orchestrator) TransitionStatus(ctx context.Context, owner, repo string, number int, to string) error {
+	log.Printf("orchestrator: TransitionStatus #%d → %q (%s/%s)", number, to, owner, repo)
 	return o.transitionStatus(ctx, owner, repo, number, "", to)
 }
 
 // transitionStatus removes the old status label and adds the new one.
 func (o *Orchestrator) transitionStatus(ctx context.Context, owner, repo string, number int, from, to string) error {
+	log.Printf("orchestrator: transitionStatus #%d %q → %q (%s/%s)", number, from, to, owner, repo)
 	statusLabels := []string{
 		"status:investigating",
 		"status:planned",

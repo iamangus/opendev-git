@@ -29,6 +29,7 @@ const maxRetries = 3
 // 9. Async cleanup of worktree
 func (o *Orchestrator) runExecution(ctx context.Context, owner, repo string, issue *github.Issue, investigationComment, defaultBranch string) error {
 	number := issue.GetNumber()
+	log.Printf("orchestrator: starting execution for #%d (%s/%s)", number, owner, repo)
 
 	_, baseSHA, err := o.github.GetDefaultBranch(ctx, owner, repo)
 	if err != nil {

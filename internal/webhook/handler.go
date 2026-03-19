@@ -54,6 +54,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	eventType := r.Header.Get("X-GitHub-Event")
+	log.Printf("webhook: received event type=%q", eventType)
 
 	switch eventType {
 	case "issues":
@@ -61,7 +62,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "issue_comment":
 		h.handleIssueCommentEvent(body)
 	default:
-		// Unsupported event — acknowledge and ignore.
+		log.Printf("webhook: unsupported event type %q — ignoring", eventType)
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -106,14 +107,30 @@ func (h *Handler) handleIssuesEvent(body []byte) {
 		return
 	}
 
-	if payload.Action != "opened" && payload.Action != "labeled" {
-		return
-	}
 	if payload.Issue == nil {
 		return
 	}
 
-	if !h.issueHasDesignatedLabel(payload.Issue) {
+	log.Printf("webhook: received issues event action=%q issue=#%d", payload.Action, payload.Issue.GetNumber())
+
+	switch payload.Action {
+	case "opened":
+		// A new issue was opened — only proceed if it already has the trigger label.
+		if !h.issueHasDesignatedLabel(payload.Issue) {
+			log.Printf("webhook: issues#opened #%d — no designated label, ignoring", payload.Issue.GetNumber())
+			return
+		}
+	case "labeled":
+		// A label was added — only proceed if the label being added IS the trigger label.
+		// This prevents the status:* label transitions we make ourselves from re-triggering
+		// the workflow (the feedback loop bug).
+		addedLabel := payload.Label.GetName()
+		if addedLabel != h.config.DesignatedLabel {
+			log.Printf("webhook: issues#labeled #%d — added label %q is not the designated trigger label, ignoring",
+				payload.Issue.GetNumber(), addedLabel)
+			return
+		}
+	default:
 		return
 	}
 
@@ -128,6 +145,8 @@ func (h *Handler) handleIssuesEvent(body []byte) {
 
 	issue := payload.Issue
 	installationID := payload.Installation.ID
+
+	log.Printf("webhook: dispatching HandleIssue for #%d (%s/%s)", issue.GetNumber(), owner, repo)
 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
@@ -158,14 +177,19 @@ func (h *Handler) handleIssueCommentEvent(body []byte) {
 		return
 	}
 
+	log.Printf("webhook: received issue_comment event action=%q issue=#%d author=%q",
+		payload.Action, payload.Issue.GetNumber(), payload.Comment.GetUser().GetLogin())
+
 	// Ignore comments from bot accounts (including ourselves) to prevent
 	// feedback loops where the bot's own ask_user message triggers a new run.
 	if login := payload.Comment.GetUser().GetLogin(); strings.HasSuffix(login, "[bot]") {
+		log.Printf("webhook: issue_comment #%d — ignoring bot comment from %q", payload.Issue.GetNumber(), login)
 		return
 	}
 
 	commentBody := payload.Comment.GetBody()
 	if !strings.Contains(commentBody, "@opendev-git") {
+		log.Printf("webhook: issue_comment #%d — no @opendev-git mention, ignoring", payload.Issue.GetNumber())
 		return
 	}
 
@@ -181,6 +205,8 @@ func (h *Handler) handleIssueCommentEvent(body []byte) {
 	issue := payload.Issue
 	comment := payload.Comment
 	installationID := payload.Installation.ID
+
+	log.Printf("webhook: dispatching HandleMention for #%d (%s/%s)", issue.GetNumber(), owner, repo)
 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)

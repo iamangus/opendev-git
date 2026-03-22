@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 
@@ -9,6 +10,12 @@ import (
 	"github.com/iamangus/opendev-git/internal/agent"
 	"github.com/iamangus/opendev-git/internal/mcpclient"
 )
+
+type planningResponse struct {
+	Approved            bool    `json:"approved"`
+	Confidence          float64 `json:"confidence"`
+	ClarificationNeeded *string `json:"clarification_needed"`
+}
 
 // runPlanning evaluates the investigation results and decides whether to proceed.
 //
@@ -20,20 +27,8 @@ func (o *Orchestrator) runPlanning(ctx context.Context, owner, repo string, issu
 	number := issue.GetNumber()
 	log.Printf("orchestrator: starting planning for #%d (%s/%s)", number, owner, repo)
 
-	// Fetch comment history so the agent can see prior conversation on resumption.
-	comments, err := o.github.GetComments(ctx, owner, repo, number)
-	if err != nil {
-		return fmt.Errorf("get issue comments for planning: %w", err)
-	}
-	history := buildCommentHistory(comments)
-
 	planCtx := fmt.Sprintf(
-		"You are reviewing an investigation report for a GitHub issue and deciding whether the plan is clear enough to implement.\n\n"+
-			"## Original Issue\n%s\n\n"+
-			"## Investigation Report\n%s\n\n"+
-			"Use the available MCP tools to explore the codebase if you need more context. "+
-			"If the plan is clear and complete, respond with your approval. "+
-			"If you need clarification from the user, use the ask_user tool.",
+		"## Issue\n%s\n\n## Investigation Report\n%s",
 		buildIssueContext(issue),
 		investigationComment,
 	)
@@ -57,10 +52,10 @@ func (o *Orchestrator) runPlanning(ctx context.Context, owner, repo string, issu
 	}, readMCP...)
 
 	runID, err := o.agent.StartRun(ctx, agent.Request{
-		AgentName:  o.config.AgentPlanning,
-		Context:    planCtx,
-		History:    history,
-		MCPServers: allServers,
+		AgentName:    o.config.AgentPlanning,
+		Context:      planCtx,
+		MCPServers:   allServers,
+		ResponseJSON: true,
 	})
 	if err != nil {
 		return fmt.Errorf("planning agent start run: %w", err)
@@ -77,6 +72,21 @@ func (o *Orchestrator) runPlanning(ctx context.Context, owner, repo string, issu
 	}
 
 	log.Printf("orchestrator: planning phase completed for #%d, response length=%d", number, len(resp.Text))
+
+	var result planningResponse
+	if err := json.Unmarshal([]byte(resp.Text), &result); err != nil {
+		return fmt.Errorf("unmarshal planning response: %w", err)
+	}
+
+	if result.ClarificationNeeded != nil && *result.ClarificationNeeded != "" {
+		log.Printf("orchestrator: planning requires clarification for #%d", number)
+		return fmt.Errorf("planning requires clarification")
+	}
+
+	if !result.Approved {
+		log.Printf("orchestrator: planning not approved for #%d", number)
+		return fmt.Errorf("planning not approved")
+	}
 
 	if err := o.transitionStatus(ctx, owner, repo, number, "", "status:approved"); err != nil {
 		return fmt.Errorf("set approved status: %w", err)

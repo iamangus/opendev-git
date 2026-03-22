@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -10,6 +11,12 @@ import (
 	"github.com/iamangus/opendev-git/internal/agent"
 	"github.com/iamangus/opendev-git/internal/mcpclient"
 )
+
+type investigationResponse struct {
+	Findings      string   `json:"findings"`
+	ProposedTasks []string `json:"proposed_tasks"`
+	Risks         string   `json:"risks"`
+}
 
 // runInvestigation drives the investigation phase for an issue.
 //
@@ -58,20 +65,16 @@ func (o *Orchestrator) runInvestigation(ctx context.Context, owner, repo string,
 	}
 	history := buildCommentHistory(comments)
 
-	// Build initial context.
-	issueContext := buildIssueContext(issue)
-	agentCtx := fmt.Sprintf(
-		"You are investigating a GitHub issue. Use the available MCP tools to explore the codebase and propose a plan.\n\n%s",
-		issueContext,
-	)
+	// Build context from issue title and body only.
+	agentCtx := buildIssueContext(issue)
 
-	findings, proposedTasks, risks, err := o.runAgentLoop(ctx, o.config.AgentInvestigation, agentCtx, history, owner, repo, number, readMCP)
+	resp, err := o.runAgentLoop(ctx, o.config.AgentInvestigation, agentCtx, history, owner, repo, number, readMCP)
 	if err != nil {
 		return err
 	}
 
 	// Build and post investigation comment.
-	investigationBody := buildInvestigationComment(findings, proposedTasks, risks)
+	investigationBody := buildInvestigationComment(resp.Findings, resp.ProposedTasks, resp.Risks)
 	log.Printf("orchestrator: investigation complete for #%d, posting comment", number)
 	if err := o.github.PostComment(ctx, owner, repo, number, investigationBody); err != nil {
 		return fmt.Errorf("post investigation comment: %w", err)
@@ -92,7 +95,7 @@ func (o *Orchestrator) runInvestigation(ctx context.Context, owner, repo string,
 //
 // The canceled run causes PollRun to return an error, which propagates cleanly
 // up to the caller.
-func (o *Orchestrator) runAgentLoop(ctx context.Context, agentName, initialContext string, history []agent.Message, owner, repo string, issueNumber int, mcpServers []mcpclient.ServerConfig) (findings, proposedTasks, risks string, err error) {
+func (o *Orchestrator) runAgentLoop(ctx context.Context, agentName, initialContext string, history []agent.Message, owner, repo string, issueNumber int, mcpServers []mcpclient.ServerConfig) (*investigationResponse, error) {
 	log.Printf("orchestrator: runAgentLoop agent=%q issue=#%d (%s/%s)", agentName, issueNumber, owner, repo)
 
 	// 1. Create a session on the shared MCP manager (no new port opened).
@@ -110,13 +113,14 @@ func (o *Orchestrator) runAgentLoop(ctx context.Context, agentName, initialConte
 
 	// 3. Start the run — get the run ID immediately.
 	runID, err := o.agent.StartRun(ctx, agent.Request{
-		AgentName:  agentName,
-		Context:    initialContext,
-		History:    history,
-		MCPServers: allServers,
+		AgentName:    agentName,
+		Context:      initialContext,
+		History:      history,
+		MCPServers:   allServers,
+		ResponseJSON: true,
 	})
 	if err != nil {
-		return "", "", "", fmt.Errorf("agent start run: %w", err)
+		return nil, fmt.Errorf("agent start run: %w", err)
 	}
 	log.Printf("orchestrator: agent run started runID=%q agent=%q issue=#%d", runID, agentName, issueNumber)
 
@@ -128,13 +132,17 @@ func (o *Orchestrator) runAgentLoop(ctx context.Context, agentName, initialConte
 	if pollErr != nil {
 		// Canceled runs mean ask_user was called — status:blocked already set.
 		log.Printf("orchestrator: agent run %q ended with error: %v", runID, pollErr)
-		return "", "", "", fmt.Errorf("agent send: %w", pollErr)
+		return nil, fmt.Errorf("agent send: %w", pollErr)
 	}
 
 	log.Printf("orchestrator: agent %q completed", agentName)
 
-	findings, proposedTasks, risks = parseInvestigationResponse(resp.Text)
-	return findings, proposedTasks, risks, nil
+	var result investigationResponse
+	if err := json.Unmarshal([]byte(resp.Text), &result); err != nil {
+		return nil, fmt.Errorf("unmarshal investigation response: %w", err)
+	}
+
+	return &result, nil
 }
 
 // buildIssueContext constructs a context string from an issue.
@@ -170,16 +178,22 @@ func buildCommentHistory(comments []*github.IssueComment) []agent.Message {
 }
 
 // buildInvestigationComment formats the investigation results as a GitHub comment.
-func buildInvestigationComment(findings, proposedTasks, risks string) string {
+func buildInvestigationComment(findings string, proposedTasks []string, risks string) string {
 	if findings == "" {
 		findings = "(see above)"
 	}
-	if proposedTasks == "" {
-		proposedTasks = "- [ ] Implement the requested changes"
+	if len(proposedTasks) == 0 {
+		proposedTasks = []string{"Implement the requested changes"}
 	}
 	if risks == "" {
 		risks = "None identified"
 	}
+
+	var taskList strings.Builder
+	for _, task := range proposedTasks {
+		taskList.WriteString(fmt.Sprintf("- [ ] %s\n", task))
+	}
+
 	return fmt.Sprintf(`## Investigation Complete
 
 ### Findings
@@ -187,47 +201,8 @@ func buildInvestigationComment(findings, proposedTasks, risks string) string {
 
 ### Proposed Tasks
 %s
-
 ### Risks
-%s`, findings, proposedTasks, risks)
-}
-
-// parseInvestigationResponse extracts findings, tasks, and risks from the agent's
-// final text. It looks for the section headers used in buildInvestigationComment.
-func parseInvestigationResponse(text string) (findings, proposedTasks, risks string) {
-	sections := map[string]*string{
-		"### Findings":       &findings,
-		"### Proposed Tasks": &proposedTasks,
-		"### Risks":          &risks,
-	}
-
-	lines := strings.Split(text, "\n")
-	var current *string
-	var buf strings.Builder
-
-	for _, line := range lines {
-		if ptr, ok := sections[strings.TrimSpace(line)]; ok {
-			if current != nil {
-				*current = strings.TrimSpace(buf.String())
-			}
-			current = ptr
-			buf.Reset()
-			continue
-		}
-		if current != nil {
-			buf.WriteString(line)
-			buf.WriteString("\n")
-		}
-	}
-	if current != nil {
-		*current = strings.TrimSpace(buf.String())
-	}
-
-	// If the agent didn't use structured sections, use the whole text as findings.
-	if findings == "" && proposedTasks == "" {
-		findings = text
-	}
-	return
+%s`, findings, taskList.String(), risks)
 }
 
 // findInvestigationComment returns the body of the first "## Investigation Complete" comment.

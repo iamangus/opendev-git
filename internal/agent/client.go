@@ -23,10 +23,11 @@ type Message struct {
 
 // Request is the payload sent to start an agent run.
 type Request struct {
-	AgentName  string                   `json:"agent_name"`
-	Context    string                   `json:"context"`
-	History    []Message                `json:"history,omitempty"`
-	MCPServers []mcpclient.ServerConfig `json:"mcp_servers,omitempty"`
+	AgentName    string                   `json:"agent_name"`
+	Context      string                   `json:"context"`
+	History      []Message                `json:"history,omitempty"`
+	MCPServers   []mcpclient.ServerConfig `json:"mcp_servers,omitempty"`
+	ResponseJSON bool                     `json:"response_json,omitempty"`
 }
 
 // Response is the result returned once a run completes.
@@ -36,9 +37,10 @@ type Response struct {
 
 // wireRunRequest is the JSON body sent to POST /api/v1/agents/{name}/run.
 type wireRunRequest struct {
-	Message    string                   `json:"message"`
-	History    []Message                `json:"history,omitempty"`
-	MCPServers []mcpclient.ServerConfig `json:"mcp_servers,omitempty"`
+	Message      string                   `json:"message"`
+	History      []Message                `json:"history,omitempty"`
+	MCPServers   []mcpclient.ServerConfig `json:"mcp_servers,omitempty"`
+	ResponseJSON bool                     `json:"response_json,omitempty"`
 }
 
 // wireRunResponse is the JSON body returned by POST /api/v1/agents/{name}/run (202).
@@ -119,9 +121,10 @@ func (c *Client) Cancel(ctx context.Context, runID string) error {
 func (c *Client) startRun(ctx context.Context, req Request) (string, error) {
 	log.Printf("agent: starting run agent=%q", req.AgentName)
 	body, err := json.Marshal(wireRunRequest{
-		Message:    req.Context,
-		History:    req.History,
-		MCPServers: req.MCPServers,
+		Message:      req.Context,
+		History:      req.History,
+		MCPServers:   req.MCPServers,
+		ResponseJSON: req.ResponseJSON,
 	})
 	if err != nil {
 		return "", fmt.Errorf("marshal run request: %w", err)

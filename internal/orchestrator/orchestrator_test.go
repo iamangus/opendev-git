@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -39,7 +40,7 @@ func TestParseTasksEmpty(t *testing.T) {
 }
 
 func TestBuildInvestigationComment(t *testing.T) {
-	comment := buildInvestigationComment("Found X", "- [ ] Fix X", "Risk Y")
+	comment := buildInvestigationComment("Found X", []string{"Fix X"}, "Risk Y")
 	if !strings.Contains(comment, "## Investigation Complete") {
 		t.Error("missing ## Investigation Complete")
 	}
@@ -55,52 +56,106 @@ func TestBuildInvestigationComment(t *testing.T) {
 }
 
 func TestBuildInvestigationCommentDefaults(t *testing.T) {
-	comment := buildInvestigationComment("", "", "")
+	comment := buildInvestigationComment("", []string{}, "")
 	if !strings.Contains(comment, "## Investigation Complete") {
 		t.Error("missing ## Investigation Complete")
 	}
-	// Defaults should be applied.
 	if !strings.Contains(comment, "- [ ]") {
 		t.Error("expected default task placeholder")
 	}
 }
 
-func TestParseInvestigationResponse(t *testing.T) {
-	text := `## Investigation Complete
+func TestInvestigationResponseJSON(t *testing.T) {
+	jsonStr := `{
+		"findings": "The codebase uses X pattern",
+		"proposed_tasks": ["Refactor Y", "Add tests"],
+		"risks": "May break Z"
+	}`
 
-### Findings
-The codebase uses X pattern.
-
-### Proposed Tasks
-- [ ] Refactor Y
-- [ ] Add tests
-
-### Risks
-May break Z`
-
-	findings, tasks, risks := parseInvestigationResponse(text)
-	if !strings.Contains(findings, "X pattern") {
-		t.Errorf("findings = %q, want to contain 'X pattern'", findings)
+	var resp investigationResponse
+	if err := json.Unmarshal([]byte(jsonStr), &resp); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
 	}
-	if !strings.Contains(tasks, "Refactor Y") {
-		t.Errorf("tasks = %q, want to contain 'Refactor Y'", tasks)
+
+	if resp.Findings != "The codebase uses X pattern" {
+		t.Errorf("findings = %q, want 'The codebase uses X pattern'", resp.Findings)
 	}
-	if !strings.Contains(risks, "May break Z") {
-		t.Errorf("risks = %q, want to contain 'May break Z'", risks)
+	if len(resp.ProposedTasks) != 2 {
+		t.Errorf("expected 2 tasks, got %d", len(resp.ProposedTasks))
+	}
+	if resp.Risks != "May break Z" {
+		t.Errorf("risks = %q, want 'May break Z'", resp.Risks)
 	}
 }
 
-func TestParseInvestigationResponseNoSections(t *testing.T) {
-	text := "The issue is about X and should be fixed by doing Y."
-	findings, tasks, risks := parseInvestigationResponse(text)
-	if findings != text {
-		t.Errorf("findings = %q, want %q", findings, text)
+func TestPlanningResponseJSON(t *testing.T) {
+	jsonStr := `{
+		"approved": true,
+		"confidence": 0.95,
+		"clarification_needed": null
+	}`
+
+	var resp planningResponse
+	if err := json.Unmarshal([]byte(jsonStr), &resp); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
 	}
-	if tasks != "" {
-		t.Errorf("tasks should be empty, got %q", tasks)
+
+	if !resp.Approved {
+		t.Error("expected approved to be true")
 	}
-	if risks != "" {
-		t.Errorf("risks should be empty, got %q", risks)
+	if resp.Confidence != 0.95 {
+		t.Errorf("confidence = %v, want 0.95", resp.Confidence)
+	}
+	if resp.ClarificationNeeded != nil {
+		t.Errorf("clarification_needed = %v, want nil", resp.ClarificationNeeded)
+	}
+}
+
+func TestPlanningResponseJSONNotApproved(t *testing.T) {
+	clarification := "Need more details on the expected behavior"
+	jsonStr := `{
+		"approved": false,
+		"confidence": 0.3,
+		"clarification_needed": "Need more details on the expected behavior"
+	}`
+
+	var resp planningResponse
+	if err := json.Unmarshal([]byte(jsonStr), &resp); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	if resp.Approved {
+		t.Error("expected approved to be false")
+	}
+	if resp.ClarificationNeeded == nil || *resp.ClarificationNeeded != clarification {
+		t.Errorf("clarification_needed = %v, want %q", resp.ClarificationNeeded, clarification)
+	}
+}
+
+func TestExecutionResponseJSON(t *testing.T) {
+	jsonStr := `{
+		"done": true,
+		"files_created": ["main.go", "main_test.go"],
+		"files_modified": ["config.go"],
+		"summary": "Implemented the feature"
+	}`
+
+	var resp executionResponse
+	if err := json.Unmarshal([]byte(jsonStr), &resp); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	if !resp.Done {
+		t.Error("expected done to be true")
+	}
+	if len(resp.FilesCreated) != 2 {
+		t.Errorf("expected 2 files created, got %d", len(resp.FilesCreated))
+	}
+	if len(resp.FilesModified) != 1 {
+		t.Errorf("expected 1 file modified, got %d", len(resp.FilesModified))
+	}
+	if resp.Summary != "Implemented the feature" {
+		t.Errorf("summary = %q, want 'Implemented the feature'", resp.Summary)
 	}
 }
 
@@ -131,7 +186,6 @@ Found something
 
 ### Risks
 None`
-	// Verify that parseTasks correctly extracts the task from an investigation comment body.
 	tasks := parseTasks(from)
 	if len(tasks) != 1 || tasks[0] != "Fix it" {
 		t.Errorf("unexpected tasks from investigation comment: %v", tasks)

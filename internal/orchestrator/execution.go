@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -12,6 +13,13 @@ import (
 )
 
 const maxRetries = 3
+
+type executionResponse struct {
+	Done          bool     `json:"done"`
+	FilesCreated  []string `json:"files_created"`
+	FilesModified []string `json:"files_modified"`
+	Summary       string   `json:"summary"`
+}
 
 // runExecution implements the in-progress phase: branch creation, code generation,
 // test execution via code-mcp, and PR creation.
@@ -106,7 +114,7 @@ func (o *Orchestrator) runExecution(ctx context.Context, owner, repo string, iss
 	}
 
 	doneMsg := fmt.Sprintf(
-		"✅ Implementation complete! PR #%d has been opened: %s",
+		"Implementation complete! PR #%d has been opened: %s",
 		pr.GetNumber(), pr.GetHTMLURL(),
 	)
 	_ = o.github.PostComment(ctx, owner, repo, number, doneMsg)
@@ -164,27 +172,30 @@ func (o *Orchestrator) generateCode(ctx context.Context, issue *github.Issue, br
 	}
 
 	implCtx := fmt.Sprintf(
-		"You are implementing a GitHub issue. Use the MCP tools to write code directly into the repository worktree.\n\n"+
-			"## Issue\n%s\n\n"+
+		"## Issue\n%s\n\n"+
 			"## Task\n%s\n\n"+
 			"## Branch\n%s\n\n"+
 			"## Attempt\n%d of %d\n"+
-			"%s\n\n"+
-			"Use the create_file and search_and_replace MCP tools to write implementation and test files directly. "+
-			"When you have finished writing all necessary files, respond with done:true.",
+			"%s",
 		buildIssueContext(issue), task, branch, attempt, maxRetries, retryContext,
 	)
 
 	resp, err := o.agent.Send(ctx, agent.Request{
-		AgentName:  o.config.AgentExecution,
-		Context:    implCtx,
-		MCPServers: mcpServers,
+		AgentName:    o.config.AgentExecution,
+		Context:      implCtx,
+		MCPServers:   mcpServers,
+		ResponseJSON: true,
 	})
 	if err != nil {
 		return fmt.Errorf("agent execution send: %w", err)
 	}
 
-	log.Printf("orchestrator: execution agent completed for task %q (attempt %d), response length=%d", task, attempt, len(resp.Text))
+	var result executionResponse
+	if err := json.Unmarshal([]byte(resp.Text), &result); err != nil {
+		return fmt.Errorf("unmarshal execution response: %w", err)
+	}
+
+	log.Printf("orchestrator: execution agent completed for task %q (attempt %d), files created=%d, modified=%d", task, attempt, len(result.FilesCreated), len(result.FilesModified))
 	return nil
 }
 

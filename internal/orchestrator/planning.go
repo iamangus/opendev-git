@@ -56,6 +56,20 @@ func (o *Orchestrator) runPlanning(ctx context.Context, owner, repo string, issu
 		Context:      planCtx,
 		MCPServers:   allServers,
 		ResponseJSON: true,
+		ResponseSchema: &agent.ResponseSchema{
+			Name:   "planning_result",
+			Strict: true,
+			Schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"approved":             map[string]any{"type": "boolean"},
+					"confidence":           map[string]any{"type": "number"},
+					"clarification_needed": map[string]any{"type": "string"},
+				},
+				"required":             []string{"approved", "confidence"},
+				"additionalProperties": false,
+			},
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("planning agent start run: %w", err)

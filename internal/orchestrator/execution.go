@@ -185,6 +185,21 @@ func (o *Orchestrator) generateCode(ctx context.Context, issue *github.Issue, br
 		Context:      implCtx,
 		MCPServers:   mcpServers,
 		ResponseJSON: true,
+		ResponseSchema: &agent.ResponseSchema{
+			Name:   "execution_result",
+			Strict: true,
+			Schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"done":           map[string]any{"type": "boolean"},
+					"files_created":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"files_modified": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"summary":        map[string]any{"type": "string"},
+				},
+				"required":             []string{"done", "files_created", "files_modified", "summary"},
+				"additionalProperties": false,
+			},
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("agent execution send: %w", err)

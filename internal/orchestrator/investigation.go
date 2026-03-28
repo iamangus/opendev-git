@@ -118,6 +118,20 @@ func (o *Orchestrator) runAgentLoop(ctx context.Context, agentName, initialConte
 		History:      history,
 		MCPServers:   allServers,
 		ResponseJSON: true,
+		ResponseSchema: &agent.ResponseSchema{
+			Name:   "investigation_result",
+			Strict: true,
+			Schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"findings":       map[string]any{"type": "string"},
+					"proposed_tasks": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"risks":          map[string]any{"type": "string"},
+				},
+				"required":             []string{"findings", "proposed_tasks", "risks"},
+				"additionalProperties": false,
+			},
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("agent start run: %w", err)

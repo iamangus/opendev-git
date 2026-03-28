@@ -13,9 +13,8 @@ import (
 )
 
 type investigationResponse struct {
-	Findings      string   `json:"findings"`
-	ProposedTasks []string `json:"proposed_tasks"`
-	Risks         string   `json:"risks"`
+	Findings string `json:"findings"`
+	Risks    string `json:"risks"`
 }
 
 // runInvestigation drives the investigation phase for an issue.
@@ -74,7 +73,7 @@ func (o *Orchestrator) runInvestigation(ctx context.Context, owner, repo string,
 	}
 
 	// Build and post investigation comment.
-	investigationBody := buildInvestigationComment(resp.Findings, resp.ProposedTasks, resp.Risks)
+	investigationBody := buildInvestigationComment(resp.Findings, resp.Risks)
 	log.Printf("orchestrator: investigation complete for #%d, posting comment", number)
 	if err := o.github.PostComment(ctx, owner, repo, number, investigationBody); err != nil {
 		return fmt.Errorf("post investigation comment: %w", err)
@@ -124,11 +123,10 @@ func (o *Orchestrator) runAgentLoop(ctx context.Context, agentName, initialConte
 			Schema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"findings":       map[string]any{"type": "string"},
-					"proposed_tasks": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-					"risks":          map[string]any{"type": "string"},
+					"findings": map[string]any{"type": "string"},
+					"risks":    map[string]any{"type": "string"},
 				},
-				"required":             []string{"findings", "proposed_tasks", "risks"},
+				"required":             []string{"findings", "risks"},
 				"additionalProperties": false,
 			},
 		},
@@ -192,20 +190,12 @@ func buildCommentHistory(comments []*github.IssueComment) []agent.Message {
 }
 
 // buildInvestigationComment formats the investigation results as a GitHub comment.
-func buildInvestigationComment(findings string, proposedTasks []string, risks string) string {
+func buildInvestigationComment(findings, risks string) string {
 	if findings == "" {
-		findings = "(see above)"
-	}
-	if len(proposedTasks) == 0 {
-		proposedTasks = []string{"Implement the requested changes"}
+		findings = "(none)"
 	}
 	if risks == "" {
 		risks = "None identified"
-	}
-
-	var taskList strings.Builder
-	for _, task := range proposedTasks {
-		taskList.WriteString(fmt.Sprintf("- [ ] %s\n", task))
 	}
 
 	return fmt.Sprintf(`## Investigation Complete
@@ -213,10 +203,8 @@ func buildInvestigationComment(findings string, proposedTasks []string, risks st
 ### Findings
 %s
 
-### Proposed Tasks
-%s
 ### Risks
-%s`, findings, taskList.String(), risks)
+%s`, findings, risks)
 }
 
 // findInvestigationComment returns the body of the first "## Investigation Complete" comment.

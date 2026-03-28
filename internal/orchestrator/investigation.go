@@ -228,3 +228,13 @@ func findInvestigationComment(comments []*github.IssueComment) string {
 	}
 	return ""
 }
+
+// findPlanComment returns the body of the first "## Plan" comment posted by planning.
+func findPlanComment(comments []*github.IssueComment) string {
+	for _, c := range comments {
+		if strings.Contains(c.GetBody(), "## Plan") {
+			return c.GetBody()
+		}
+	}
+	return ""
+}

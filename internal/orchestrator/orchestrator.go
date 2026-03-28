@@ -75,8 +75,13 @@ func (o *Orchestrator) HandleMention(ctx context.Context, owner, repo string, is
 
 	// Check current status from labels.
 	if issueHasLabel(issue, "status:planned") || issueHasLabel(issue, "status:approved") {
+		// Prefer the plan comment for execution; fall back to investigation comment.
+		execComment := findPlanComment(comments)
+		if execComment == "" {
+			execComment = investigationComment
+		}
 		log.Printf("orchestrator: HandleMention #%d — issue is planned/approved, resuming execution", issue.GetNumber())
-		return o.runExecution(ctx, owner, repo, issue, investigationComment, defaultBranch)
+		return o.runExecution(ctx, owner, repo, issue, execComment, defaultBranch)
 	}
 
 	// Default: re-run planning.

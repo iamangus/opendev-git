@@ -238,7 +238,7 @@ func (o *Orchestrator) checkOffTask(ctx context.Context, owner, repo string, iss
 
 	for _, c := range comments {
 		body := c.GetBody()
-		if !strings.Contains(body, "## Investigation Complete") {
+		if !strings.Contains(body, "## Plan") {
 			continue
 		}
 		old := "- [ ] " + task

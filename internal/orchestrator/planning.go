@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/google/go-github/v84/github"
 	"github.com/iamangus/opendev-git/internal/agent"
@@ -12,17 +13,18 @@ import (
 )
 
 type planningResponse struct {
-	Approved            bool    `json:"approved"`
-	Confidence          float64 `json:"confidence"`
-	ClarificationNeeded *string `json:"clarification_needed"`
+	Tasks   []string `json:"tasks"`
+	Summary string   `json:"summary"`
 }
 
-// runPlanning evaluates the investigation results and decides whether to proceed.
+// runPlanning receives the investigation results and produces a concrete
+// implementation plan. It does not ask for clarification — that is the
+// investigation phase's responsibility.
 //
 // Steps:
-//  1. Agent evaluates confidence in the proposed task list (with read MCP access)
-//  2. If the run completes → set status:approved, proceed to execution
-//  3. If the run is canceled (ask_user) → status:blocked was already set by the MCP handler
+//  1. Agent reads codebase and investigation report, produces ordered task list
+//  2. Post "## Plan" comment with tasks as checkboxes
+//  3. Set status:approved and proceed to execution
 func (o *Orchestrator) runPlanning(ctx context.Context, owner, repo string, issue *github.Issue, investigationComment, defaultBranch string) error {
 	number := issue.GetNumber()
 	log.Printf("orchestrator: starting planning for #%d (%s/%s)", number, owner, repo)
@@ -39,22 +41,10 @@ func (o *Orchestrator) runPlanning(ctx context.Context, owner, repo string, issu
 		Transport: "streamable-http",
 	}}
 
-	// Start a session on the shared MCP manager.
-	sessionID, cleanup := o.mcpManager.CreateSession(owner, repo, number, o.github, o, o.agent)
-	defer cleanup()
-
-	allServers := append([]mcpclient.ServerConfig{
-		{
-			Name:      "ask_user",
-			URL:       o.mcpManager.MCPEndpoint(sessionID),
-			Transport: "streamable-http",
-		},
-	}, readMCP...)
-
 	runID, err := o.agent.StartRun(ctx, agent.Request{
 		AgentName:    o.config.AgentPlanning,
 		Context:      planCtx,
-		MCPServers:   allServers,
+		MCPServers:   readMCP,
 		ResponseJSON: true,
 		ResponseSchema: &agent.ResponseSchema{
 			Name:   "planning_result",
@@ -62,11 +52,10 @@ func (o *Orchestrator) runPlanning(ctx context.Context, owner, repo string, issu
 			Schema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"approved":             map[string]any{"type": "boolean"},
-					"confidence":           map[string]any{"type": "number"},
-					"clarification_needed": map[string]any{"type": "string"},
+					"tasks":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"summary": map[string]any{"type": "string"},
 				},
-				"required":             []string{"approved", "confidence"},
+				"required":             []string{"tasks", "summary"},
 				"additionalProperties": false,
 			},
 		},
@@ -76,34 +65,45 @@ func (o *Orchestrator) runPlanning(ctx context.Context, owner, repo string, issu
 	}
 	log.Printf("orchestrator: planning agent run started runID=%q issue=#%d", runID, number)
 
-	o.mcpManager.SetRunID(sessionID, runID)
-
 	resp, pollErr := o.agent.PollRun(ctx, runID)
 	if pollErr != nil {
-		// Canceled runs mean ask_user was called — status:blocked already set.
 		log.Printf("orchestrator: planning agent run %q ended with error: %v", runID, pollErr)
-		return fmt.Errorf("planning agent send: %w", pollErr)
+		return fmt.Errorf("planning agent: %w", pollErr)
 	}
-
-	log.Printf("orchestrator: planning phase completed for #%d, response length=%d", number, len(resp.Text))
 
 	var result planningResponse
 	if err := json.Unmarshal([]byte(resp.Text), &result); err != nil {
 		return fmt.Errorf("unmarshal planning response: %w", err)
 	}
 
-	if result.ClarificationNeeded != nil && *result.ClarificationNeeded != "" {
-		log.Printf("orchestrator: planning requires clarification for #%d", number)
-		return fmt.Errorf("planning requires clarification")
+	if len(result.Tasks) == 0 {
+		result.Tasks = []string{"Implement the requested changes"}
 	}
 
-	if !result.Approved {
-		log.Printf("orchestrator: planning not approved for #%d", number)
-		return fmt.Errorf("planning not approved")
+	planComment := buildPlanComment(result.Summary, result.Tasks)
+	log.Printf("orchestrator: planning complete for #%d, posting plan comment", number)
+	if err := o.github.PostComment(ctx, owner, repo, number, planComment); err != nil {
+		return fmt.Errorf("post plan comment: %w", err)
 	}
 
 	if err := o.transitionStatus(ctx, owner, repo, number, "", "status:approved"); err != nil {
 		return fmt.Errorf("set approved status: %w", err)
 	}
-	return o.runExecution(ctx, owner, repo, issue, investigationComment, defaultBranch)
+	return o.runExecution(ctx, owner, repo, issue, planComment, defaultBranch)
+}
+
+// buildPlanComment formats the planning results as a GitHub comment with
+// checkbox tasks that execution can parse and check off.
+func buildPlanComment(summary string, tasks []string) string {
+	var taskList strings.Builder
+	for _, t := range tasks {
+		taskList.WriteString(fmt.Sprintf("- [ ] %s\n", t))
+	}
+
+	return fmt.Sprintf(`## Plan
+
+%s
+
+### Tasks
+%s`, summary, taskList.String())
 }

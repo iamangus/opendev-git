@@ -105,8 +105,10 @@ func (c *Client) DeleteBranch(ctx context.Context, repo, branch string) error {
 
 // testRunResponse is the JSON body returned by the test/run endpoint.
 type testRunResponse struct {
-	Passed bool   `json:"passed"`
-	Output string `json:"output"`
+	ExitCode int    `json:"exit_code"`
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+	TimedOut bool   `json:"timed_out"`
 }
 
 // RunTests runs the repo's configured test command against the given branch worktree.
@@ -128,7 +130,13 @@ func (c *Client) RunTests(ctx context.Context, repo, branch string) (bool, strin
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return false, "", fmt.Errorf("RunTests decode response: %w", err)
 	}
-	return result.Passed, result.Output, nil
+
+	output := result.Stdout
+	if result.Stderr != "" {
+		output += "\n" + result.Stderr
+	}
+	passed := result.ExitCode == 0 && !result.TimedOut
+	return passed, output, nil
 }
 
 // PushBranch pushes the branch worktree's commits to the remote origin.

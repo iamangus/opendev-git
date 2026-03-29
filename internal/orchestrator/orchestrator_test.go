@@ -40,15 +40,12 @@ func TestParseTasksEmpty(t *testing.T) {
 }
 
 func TestBuildInvestigationComment(t *testing.T) {
-	comment := buildInvestigationComment("Found X", []string{"Fix X"}, "Risk Y")
+	comment := buildInvestigationComment("Found X", "Risk Y")
 	if !strings.Contains(comment, "## Investigation Complete") {
 		t.Error("missing ## Investigation Complete")
 	}
 	if !strings.Contains(comment, "Found X") {
 		t.Error("missing findings")
-	}
-	if !strings.Contains(comment, "- [ ] Fix X") {
-		t.Error("missing task")
 	}
 	if !strings.Contains(comment, "Risk Y") {
 		t.Error("missing risks")
@@ -56,19 +53,21 @@ func TestBuildInvestigationComment(t *testing.T) {
 }
 
 func TestBuildInvestigationCommentDefaults(t *testing.T) {
-	comment := buildInvestigationComment("", []string{}, "")
+	comment := buildInvestigationComment("", "")
 	if !strings.Contains(comment, "## Investigation Complete") {
 		t.Error("missing ## Investigation Complete")
 	}
-	if !strings.Contains(comment, "- [ ]") {
-		t.Error("expected default task placeholder")
+	if !strings.Contains(comment, "(none)") {
+		t.Error("expected default findings placeholder")
+	}
+	if !strings.Contains(comment, "None identified") {
+		t.Error("expected default risks placeholder")
 	}
 }
 
 func TestInvestigationResponseJSON(t *testing.T) {
 	jsonStr := `{
 		"findings": "The codebase uses X pattern",
-		"proposed_tasks": ["Refactor Y", "Add tests"],
 		"risks": "May break Z"
 	}`
 
@@ -80,9 +79,6 @@ func TestInvestigationResponseJSON(t *testing.T) {
 	if resp.Findings != "The codebase uses X pattern" {
 		t.Errorf("findings = %q, want 'The codebase uses X pattern'", resp.Findings)
 	}
-	if len(resp.ProposedTasks) != 2 {
-		t.Errorf("expected 2 tasks, got %d", len(resp.ProposedTasks))
-	}
 	if resp.Risks != "May break Z" {
 		t.Errorf("risks = %q, want 'May break Z'", resp.Risks)
 	}
@@ -90,9 +86,8 @@ func TestInvestigationResponseJSON(t *testing.T) {
 
 func TestPlanningResponseJSON(t *testing.T) {
 	jsonStr := `{
-		"approved": true,
-		"confidence": 0.95,
-		"clarification_needed": null
+		"tasks": ["Refactor module X", "Add integration tests"],
+		"summary": "Two-step plan to improve reliability"
 	}`
 
 	var resp planningResponse
@@ -100,35 +95,14 @@ func TestPlanningResponseJSON(t *testing.T) {
 		t.Fatalf("failed to unmarshal: %v", err)
 	}
 
-	if !resp.Approved {
-		t.Error("expected approved to be true")
+	if len(resp.Tasks) != 2 {
+		t.Errorf("expected 2 tasks, got %d", len(resp.Tasks))
 	}
-	if resp.Confidence != 0.95 {
-		t.Errorf("confidence = %v, want 0.95", resp.Confidence)
+	if resp.Tasks[0] != "Refactor module X" {
+		t.Errorf("tasks[0] = %q, want 'Refactor module X'", resp.Tasks[0])
 	}
-	if resp.ClarificationNeeded != nil {
-		t.Errorf("clarification_needed = %v, want nil", resp.ClarificationNeeded)
-	}
-}
-
-func TestPlanningResponseJSONNotApproved(t *testing.T) {
-	clarification := "Need more details on the expected behavior"
-	jsonStr := `{
-		"approved": false,
-		"confidence": 0.3,
-		"clarification_needed": "Need more details on the expected behavior"
-	}`
-
-	var resp planningResponse
-	if err := json.Unmarshal([]byte(jsonStr), &resp); err != nil {
-		t.Fatalf("failed to unmarshal: %v", err)
-	}
-
-	if resp.Approved {
-		t.Error("expected approved to be false")
-	}
-	if resp.ClarificationNeeded == nil || *resp.ClarificationNeeded != clarification {
-		t.Errorf("clarification_needed = %v, want %q", resp.ClarificationNeeded, clarification)
+	if resp.Summary != "Two-step plan to improve reliability" {
+		t.Errorf("summary = %q, want 'Two-step plan to improve reliability'", resp.Summary)
 	}
 }
 

@@ -2,7 +2,6 @@ package orchestrator
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -150,7 +149,7 @@ func (o *Orchestrator) runAgentLoop(ctx context.Context, agentName, initialConte
 	log.Printf("orchestrator: agent %q completed", agentName)
 
 	var result investigationResponse
-	if err := json.Unmarshal([]byte(resp.Text), &result); err != nil {
+	if err := resp.Unmarshal(&result); err != nil {
 		return nil, fmt.Errorf("unmarshal investigation response: %w", err)
 	}
 

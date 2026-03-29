@@ -2,7 +2,6 @@ package orchestrator
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -72,7 +71,7 @@ func (o *Orchestrator) runPlanning(ctx context.Context, owner, repo string, issu
 	}
 
 	var result planningResponse
-	if err := json.Unmarshal([]byte(resp.Text), &result); err != nil {
+	if err := resp.Unmarshal(&result); err != nil {
 		return fmt.Errorf("unmarshal planning response: %w", err)
 	}
 

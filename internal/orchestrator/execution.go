@@ -2,7 +2,6 @@ package orchestrator
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -213,7 +212,7 @@ func (o *Orchestrator) generateCode(ctx context.Context, issue *github.Issue, br
 	}
 
 	var result executionResponse
-	if err := json.Unmarshal([]byte(resp.Text), &result); err != nil {
+	if err := resp.Unmarshal(&result); err != nil {
 		return fmt.Errorf("unmarshal execution response: %w", err)
 	}
 

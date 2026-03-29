@@ -8,6 +8,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/iamangus/opendev-git/internal/mcpclient"
@@ -41,6 +43,96 @@ type Request struct {
 // Response is the result returned once a run completes.
 type Response struct {
 	Text string
+}
+
+// Unmarshal extracts JSON from r.Text and unmarshals it into v.
+// It handles cases where the agent prepends conversational text before the
+// JSON object or wraps it in markdown code fences (```json ... ```).
+func (r *Response) Unmarshal(v any) error {
+	data, err := extractJSON(r.Text)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, v)
+}
+
+var codeFenceRe = regexp.MustCompile("(?s)```(?:json)?\\s*\n(.*?)\\s*```")
+
+// extractJSON returns the bytes of the first valid JSON object in s.
+// It strips markdown code fences and leading/trailing non-JSON text.
+func extractJSON(s string) ([]byte, error) {
+	s = strings.TrimSpace(s)
+
+	if json.Valid([]byte(s)) {
+		return []byte(s), nil
+	}
+
+	if m := codeFenceRe.FindStringSubmatch(s); len(m) == 2 {
+		candidate := strings.TrimSpace(m[1])
+		if json.Valid([]byte(candidate)) {
+			return []byte(candidate), nil
+		}
+	}
+
+	start := strings.Index(s, "{")
+	if start == -1 {
+		return nil, fmt.Errorf("no JSON object found in response")
+	}
+
+	end := findMatchingBrace(s, start)
+	if end == -1 {
+		return nil, fmt.Errorf("unbalanced braces in response")
+	}
+
+	candidate := s[start : end+1]
+	if json.Valid([]byte(candidate)) {
+		return []byte(candidate), nil
+	}
+
+	return nil, fmt.Errorf("extracted content is not valid JSON")
+}
+
+// findMatchingBrace returns the index of the closing } that matches the
+// opening { at position start, respecting JSON strings and nesting.
+func findMatchingBrace(s string, start int) int {
+	depth := 0
+	inString := false
+	escape := false
+
+	for i := start; i < len(s); i++ {
+		ch := s[i]
+
+		if escape {
+			escape = false
+			continue
+		}
+
+		if ch == '\\' && inString {
+			escape = true
+			continue
+		}
+
+		if ch == '"' {
+			inString = !inString
+			continue
+		}
+
+		if inString {
+			continue
+		}
+
+		switch ch {
+		case '{', '[':
+			depth++
+		case '}', ']':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+
+	return -1
 }
 
 // wireRunRequest is the JSON body sent to POST /api/v1/agents/{name}/run.

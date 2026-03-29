@@ -132,18 +132,25 @@ func (o *Orchestrator) runExecution(ctx context.Context, owner, repo string, iss
 // executeTask asks the agent to implement a single task via the write MCP endpoint,
 // then runs tests via code-mcp. Retries up to maxRetries times on test failure.
 func (o *Orchestrator) executeTask(ctx context.Context, owner, repo string, issue *github.Issue, branch, task string) error {
-	writeMCP := []mcpclient.ServerConfig{{
-		Name:      "code",
-		URL:       o.codemcp.MCPWriteURL(repo, branch),
-		Transport: "streamable-http",
-	}}
+	mcpServers := []mcpclient.ServerConfig{
+		{
+			Name:      "code-read",
+			URL:       o.codemcp.MCPReadURL(repo, branch),
+			Transport: "streamable-http",
+		},
+		{
+			Name:      "code-write",
+			URL:       o.codemcp.MCPWriteURL(repo, branch),
+			Transport: "streamable-http",
+		},
+	}
 
 	var lastTestOutput string
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		log.Printf("orchestrator: task attempt %d/%d: %s", attempt, maxRetries, task)
 
-		if err := o.generateCode(ctx, issue, branch, task, attempt, lastTestOutput, writeMCP); err != nil {
+		if err := o.generateCode(ctx, issue, branch, task, attempt, lastTestOutput, mcpServers); err != nil {
 			return err
 		}
 

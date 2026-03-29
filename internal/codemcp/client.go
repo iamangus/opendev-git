@@ -141,8 +141,8 @@ func (c *Client) RunTests(ctx context.Context, repo, branch string) (bool, strin
 
 // PushBranch pushes the branch worktree's commits to the remote origin.
 func (c *Client) PushBranch(ctx context.Context, repo, branch string) error {
-	path := fmt.Sprintf("/api/repos/%s/branches/%s/merge", repo, branch)
-	resp, err := c.post(ctx, path, nil)
+	path := fmt.Sprintf("/api/repos/%s/branches/%s/push", repo, branch)
+	resp, err := c.post(ctx, path, []byte("{}"))
 	if err != nil {
 		return fmt.Errorf("PushBranch %q/%q: %w", repo, branch, err)
 	}

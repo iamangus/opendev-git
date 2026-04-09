@@ -14,7 +14,8 @@ type Config struct {
 	GitHubPrivateKey    string // PEM content
 	GitHubWebhookSecret string
 	AgentServiceURL     string
-	CodeMCPURL          string // base URL of the code-mcp service
+	AgentServiceAPIKey  string // optional Bearer token for agentfoundry auth
+	CodeMCPURL          string // base URL of the opendev-coder service
 	DesignatedLabel     string // label that triggers investigation (default: "opendev-git")
 	RepoOwner           string
 	RepoName            string
@@ -22,7 +23,7 @@ type Config struct {
 	ToolBudget          int    // max tool calls per phase (default: 20)
 
 	// Agent name mappings — each field maps a specific logical call in the
-	// orchestrator to a named agent definition in opendev-agents. Set the
+	// orchestrator to a named agent definition in agentfoundry. Set the
 	// corresponding environment variable to point any call at a different agent
 	// without touching code. Add a new field here for every new agent call
 	// introduced in the orchestrator.
@@ -30,7 +31,7 @@ type Config struct {
 	AgentPlanning      string // AGENT_PLANNING      (default: "planning")
 	AgentExecution     string // AGENT_EXECUTION     (default: "execution")
 
-	// InternalMCPURL is the base URL that opendev-agents should use to reach
+	// InternalMCPURL is the base URL that the agent service should use to reach
 	// the ask_user MCP endpoints hosted on opendev-git's own HTTP server.
 	// The path /{sessionID}/mcp is appended to form the full endpoint URL.
 	// Defaults to http://127.0.0.1:8080 for single-host setups. In production
@@ -71,6 +72,8 @@ func Load() (*Config, error) {
 	if cfg.AgentServiceURL == "" {
 		return nil, errors.New("AGENT_SERVICE_URL is required")
 	}
+
+	cfg.AgentServiceAPIKey = os.Getenv("AGENT_SERVICE_API_KEY")
 
 	cfg.CodeMCPURL = os.Getenv("CODE_MCP_URL")
 	if cfg.CodeMCPURL == "" {

@@ -160,17 +160,26 @@ type wireRunStatus struct {
 
 const pollInterval = 3 * time.Second
 
-// Client is an HTTP client for the opendev-agents service.
+// Client is an HTTP client for the agent service (agentfoundry).
 type Client struct {
 	baseURL    string
+	apiKey     string
 	httpClient *http.Client
 }
 
 // NewClient creates a new agent Client targeting baseURL.
-func NewClient(baseURL string) *Client {
+// If apiKey is non-empty, it is sent as a Bearer token on every request.
+func NewClient(baseURL, apiKey string) *Client {
 	return &Client{
 		baseURL:    baseURL,
+		apiKey:     apiKey,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+func (c *Client) setAuth(req *http.Request) {
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 }
 
@@ -205,6 +214,7 @@ func (c *Client) Cancel(ctx context.Context, runID string) error {
 	if err != nil {
 		return fmt.Errorf("build cancel request: %w", err)
 	}
+	c.setAuth(httpReq)
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("cancel run: %w", err)
@@ -238,6 +248,7 @@ func (c *Client) startRun(ctx context.Context, req Request) (string, error) {
 		return "", fmt.Errorf("build run request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	c.setAuth(httpReq)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -281,6 +292,7 @@ func (c *Client) pollRun(ctx context.Context, runID string) (*Response, error) {
 		if err != nil {
 			return nil, fmt.Errorf("build poll request: %w", err)
 		}
+		c.setAuth(httpReq)
 
 		resp, err := c.httpClient.Do(httpReq)
 		if err != nil {

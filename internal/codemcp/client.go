@@ -11,13 +11,13 @@ import (
 	"time"
 )
 
-// Client is a REST client for the code-mcp management API.
+// Client is a REST client for the opendev-coder management API.
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
 }
 
-// NewClient creates a Client targeting the given code-mcp base URL.
+// NewClient creates a Client targeting the given opendev-coder base URL.
 func NewClient(baseURL string) *Client {
 	return &Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),

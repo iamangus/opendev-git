@@ -30,7 +30,7 @@ func main() {
 		log.Fatalf("load config: %v", err)
 	}
 
-	agentClient := agent.NewClient(cfg.AgentServiceURL)
+	agentClient := agent.NewClient(cfg.AgentServiceURL, cfg.AgentServiceAPIKey)
 	codeMCPClient := codemcp.NewClient(cfg.CodeMCPURL)
 
 	mcpManager := internalmcp.NewManager(cfg.InternalMCPURL)
